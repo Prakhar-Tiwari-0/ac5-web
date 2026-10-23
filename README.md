@@ -2,7 +2,6 @@
 
 An experimental WebAssembly and WebGPU compatibility layer for *Ace Combat 5: The Unsung War*, built on [sal063's static recompilation project](https://github.com/sal063/Ace-Combat-5-Static-recompilation).
 
-The retail game does not boot yet. No original game code has run, no game frame has rendered, and the menu and missions aren't playable. The passing tests use open-source subsystems and small fixtures written for this repository.
 
 ## What works
 
