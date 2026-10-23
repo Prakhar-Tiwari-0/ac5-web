@@ -61,7 +61,21 @@ The server must be running while browser regressions execute. Exact coverage and
 
 ## Private retail build pipeline
 
-No game content is distributed. If you own the supported NTSC-U release, place its extracted executable at `game/SLUS_208.51` or pass another path. The build validates the file before generation:
+No game content is distributed. If you own the supported NTSC-U release, place its extracted executable at `game/SLUS_208.51` or pass another path. The required file is **3,634,092 bytes**, ELF32 little-endian MIPS, SHA-256 `c3594227605307806592416dbd723bf5771952e279ee281a40da305426667385`.
+
+First validate and generate the original code corpus without installing or invoking Emscripten:
+
+```sh
+python3 scripts/build.py \
+  --upstream .cache/upstream \
+  --out build/retail \
+  --elf game/SLUS_208.51 \
+  --generate-only
+```
+
+`build/retail/build.json` records input identity, generation status, inventory and errors. Generation alone cannot create `retail.json`, compile any unit or pass a game gate. No ISO is required for this step. Input validation and generation precede compiler checks, so missing inputs produce `ELF_MISSING` even without a configured toolchain.
+
+Then compile and link with the same output directory; validated generated output is reused:
 
 ```sh
 python3 scripts/build.py \

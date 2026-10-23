@@ -17,19 +17,24 @@ from corpus import (BuildError, browser_control_flags, compile_units, digest, ge
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--upstream', required=True, type=Path)
-    ap.add_argument('--emcc', required=True, type=Path)
+    ap.add_argument('--emcc', type=Path, help='Required for compilation; not needed with --generate-only')
     ap.add_argument('--out', required=True, type=Path)
     ap.add_argument('--elf', type=Path, help='Legally obtained supported NTSC-U SLUS_208.51')
-    ap.add_argument('--runtime-scan', action='store_true', help='Compile original source list, without browser replacements')
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument('--runtime-scan', action='store_true', help='Compile original source list, without browser replacements')
+    mode.add_argument('--generate-only', action='store_true', help='Validate the retail ELF and generate/inventory C without a compiler; never passes Gate A')
     ap.add_argument('--jobs', type=int, default=2)
     args = ap.parse_args(argv)
-    up, out, cc = args.upstream.resolve(), args.out.resolve(), args.emcc.resolve()
+    up, out = args.upstream.resolve(), args.out.resolve()
+    cc = args.emcc.resolve() if args.emcc else None
     out.mkdir(parents=True, exist_ok=True)
     here = Path(__file__).resolve().parents[1]
     report = {'kind': 'retail compilation pipeline; never proof of game execution',
               'upstream': str(up), 'units': [], 'retail': {'available': False, 'compiled': 0,
               'total': None, 'percent': None}, 'completeRunnableLink': False,
-              'completeLink': False, 'gates': {k: False for k in 'ABCDEF'},
+              'completeLink': False, 'generationComplete': False,
+              'mode': 'generate-only' if args.generate_only else 'runtime-scan' if args.runtime_scan else 'build',
+              'gates': {k: False for k in 'ABCDEF'},
               'startup': {'executed': False, 'reason': 'Build does not run original game code.'}}
     def save():
         json_write(out / 'build.json', report)
@@ -45,10 +50,6 @@ def main(argv=None):
             raise BuildError('UPSTREAM_PATCH_MISSING', 'Run scripts/prepare_upstream.py first.')
         if not args.runtime_scan and 'AC5_BROWSER_CONTROL_PATCH' not in (up / 'runtime/src/ps2_kernel.c').read_text():
             raise BuildError('UPSTREAM_CONTROL_PATCH_MISSING', 'Run scripts/prepare_upstream.py first.')
-        version = run([cc, '--version'])
-        report['toolchain'] = version
-        if version['exit']:
-            raise BuildError('COMPILER_UNAVAILABLE', version['stderr'])
         report['upstreamCommit'] = subprocess.run(['git', '-C', str(up), 'rev-parse', 'HEAD'], capture_output=True, text=True).stdout.strip()
         flags = ['-std=gnu2x', '-O1', '-mtail-call', '-pthread', '-fno-strict-aliasing', '-fwrapv',
                  '-DPS2_PORTABLE_DISPATCH=1', '-DPS2_PORTABLE_HOOKS=1', '-DPS2_TRACE_CALLS=1',
@@ -71,8 +72,24 @@ def main(argv=None):
             if record['exit']:
                 raise BuildError('GENERATION_FAILED', 'Generator failed; exact command/stdout/stderr in build.json.')
             report['retail'].update(available=True, total=record['inventory']['codeUnits'])
+            report['generationComplete'] = True
+            save()
+            if args.generate_only:
+                print(json.dumps({k: report[k] for k in ['mode', 'generationComplete', 'retail', 'completeLink', 'gates']}, indent=2))
+                return 0
             sources += sorted(gen.glob('*.c'))
             flags += ['-I' + str(gen)]
+        # Diagnose retail input/generation before toolchain setup. The generated
+        # corpus is retained if compilation is unavailable, so it can resume later.
+        if cc is None:
+            raise BuildError('COMPILER_MISSING', 'Supply --emcc /path/to/emcc for compilation, or use --generate-only. Valid generated output is retained.')
+        try:
+            version = run([cc, '--version'])
+        except OSError as exc:
+            raise BuildError('COMPILER_UNAVAILABLE', str(exc)) from exc
+        report['toolchain'] = version
+        if version['exit']:
+            raise BuildError('COMPILER_UNAVAILABLE', version['stderr'])
         if args.runtime_scan:
             sources += runtime_sources(up, original_scan=True)
         elif identity:

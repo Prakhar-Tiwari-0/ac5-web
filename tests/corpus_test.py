@@ -13,9 +13,85 @@ from unittest import mock
 HERE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(HERE / 'scripts'))
 import corpus
+import build as build_cli
 
 
 class CorpusTests(unittest.TestCase):
+    def test_cli_input_precedes_toolchain(self):
+        """Exercise the public CLI, with no valid retail input or compiler."""
+        upstream = Path(os.environ.get('AC5_UPSTREAM', str(HERE/'.cache/upstream'))).resolve()
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            elf = root/'SLUS_208.51'
+            for mode in ([], ['--generate-only']):
+                out = root/('generation' if mode else 'full')
+                out.mkdir()
+                (out/'retail.json').write_text('{"stale":true}')
+                command = [sys.executable, str(HERE/'scripts/build.py'),
+                           '--upstream', str(upstream), '--out', str(out),
+                           '--elf', str(elf), '--emcc', str(root/'absent-emcc'), *mode]
+                result = subprocess.run(command, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn('ELF_MISSING', result.stderr)
+                report = json.loads((out/'build.json').read_text())
+                self.assertEqual(report['error']['code'], 'ELF_MISSING')
+                self.assertNotIn('toolchain', report)
+                self.assertFalse((out/'retail.json').exists())
+                self.assertFalse(any(report['gates'].values()))
+            elf.write_bytes(b'wrong revision')
+            result = subprocess.run(command, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 2)
+            self.assertIn('ELF_SIZE_MISMATCH', result.stderr)
+
+    def test_generate_only_boundary(self):
+        """Mock delegation only; actual emitter/cache execution is tested below."""
+        upstream = Path(os.environ.get('AC5_UPSTREAM', str(HERE/'.cache/upstream'))).resolve()
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            args = ['--upstream', str(upstream), '--out', str(root),
+                    '--elf', str(root/'absent.elf'), '--generate-only']
+            identity = {'validated': True, 'scope': 'mock delegation test only'}
+            generated = {'exit': 0, 'inventory': {'codeUnits': 7}, 'cached': False}
+            with mock.patch.object(build_cli, 'validate_input', return_value=identity), \
+                 mock.patch.object(build_cli, 'generate', return_value=generated) as generate, \
+                 mock.patch.object(build_cli, 'run') as compiler, \
+                 mock.patch.object(build_cli, 'compile_units') as compile_units:
+                self.assertEqual(build_cli.main(args), 0)
+                generate.assert_called_once()
+                compiler.assert_not_called()
+                compile_units.assert_not_called()
+            report = json.loads((root/'build.json').read_text())
+            self.assertTrue(report['generationComplete'])
+            self.assertEqual(report['retail']['total'], 7)
+            self.assertEqual(report['retail']['compiled'], 0)
+            self.assertFalse(report['completeLink'])
+            self.assertFalse(any(report['gates'].values()))
+            self.assertFalse((root/'retail.json').exists())
+            # A later compile request retains the generation result, but must
+            # report the missing compiler instead of implying a runnable link.
+            with mock.patch.object(build_cli, 'validate_input', return_value=identity), \
+                 mock.patch.object(build_cli, 'generate', return_value=generated):
+                self.assertEqual(build_cli.main(args[:-1]), 2)
+            report = json.loads((root/'build.json').read_text())
+            self.assertTrue(report['generationComplete'])
+            self.assertEqual(report['error']['code'], 'COMPILER_MISSING')
+
+    def test_generate_only_failure_evidence(self):
+        upstream = Path(os.environ.get('AC5_UPSTREAM', str(HERE/'.cache/upstream'))).resolve()
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d)
+            evidence = {'exit': 2, 'command': ['generator', '--hooks', 'hooks.json'],
+                        'stderr': 'unresolved override/hook', 'stdout': 'analysis log'}
+            with mock.patch.object(build_cli, 'validate_input', return_value={'scope':'mock'}), \
+                 mock.patch.object(build_cli, 'generate', return_value=evidence):
+                self.assertEqual(build_cli.main(['--upstream', str(upstream),
+                    '--out', str(out), '--generate-only']), 2)
+            report = json.loads((out/'build.json').read_text())
+            self.assertEqual(report['error']['code'], 'GENERATION_FAILED')
+            self.assertEqual(report['generation'], evidence)
+            self.assertFalse(report['generationComplete'])
+            self.assertFalse((out/'retail.json').exists())
+
     def test_input_fail_closed(self):
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / 'SLUS_208.51'

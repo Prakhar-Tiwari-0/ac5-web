@@ -2,6 +2,8 @@
 
 Status reflects direct evidence as of 2026-10-22.
 
+Canonical-workspace transition validation reproduced the complete build, all nine Chromium suites and native/Wasm dispatch parity. The retail build now supports `--generate-only` without Emscripten and reports input/generation failures before compiler setup. The actual request remains blocked at `ELF_MISSING`; this is build-path preparation, with no change to the retail gates below.
+
 | Gate | Status | Evidence boundary |
 |---|---|---|
 | A — Complete retail corpus compiles/links | Blocked | No supported retail executable was available; zero retail units compiled |
