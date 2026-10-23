@@ -1,33 +1,23 @@
 # ac5-web
 
-Experimental **Ace Combat 5 → Chromium** compatibility work using WebAssembly and WebGPU.
+An experimental WebAssembly and WebGPU compatibility layer for *Ace Combat 5: The Unsung War*, built on [sal063's static recompilation project](https://github.com/sal063/Ace-Combat-5-Static-recompilation).
 
-This repository packages the browser runtime, renderer, integration harness, build pipeline and regression tests developed from [sal063's Ace Combat 5 static recompilation project](https://github.com/sal063/Ace-Combat-5-Static-recompilation). The upstream project provides the PS2 runtime, GS/VU/VIF/SPU2 implementations and static recompilation pipeline. This project adds portable dispatch and hook support, a browser-oriented runtime, WebGPU rendering, browser input/audio/storage integration, and synthetic fixtures that can be distributed without game data.
+The retail game does not boot yet. No original game code has run, no game frame has rendered, and the menu and missions aren't playable. The passing tests use open-source subsystems and small fixtures written for this repository.
 
-> **Current status:** the actual retail game has **not booted**. No retail translation unit has been compiled or executed, no real-game frame has rendered, and no menu or mission is playable. Passing fixtures exercise original open-source subsystems with self-authored commands and generated functions; they are not the game.
+## What works
 
-## Implemented scope
+The browser runtime currently has:
 
-- Portable WebAssembly dispatch, hooks and strict whole-runtime linking.
-- Original GS decoder connected to a WebGPU backend for textures, render targets, destination-dependent blending, alpha/depth behavior, depth copies and selected framebuffer shuffles.
-- Native mesh programs 0–5 for the tested matrix, lighting, terrain/water, billboard and screen-vertex paths.
-- RGB5A1 framebuffer writes, destination-independent primitive batching and coordinated generation-safe texture eviction; [tested scope and remaining limits](docs/GRAPHICS_COMPATIBILITY.md).
-- Worker-hosted execution with keyboard, mouse and Gamepad API input.
-- Original SPU2 mixing into a bounded AudioWorklet ring.
-- Lazy browser file reads beyond 4 GiB and IndexedDB memory-card persistence.
-- Original guest scheduler integration with acknowledged pause, resume, stop and persistence barriers.
-- A validated retail corpus pipeline that accepts a legally obtained supported executable but has not yet been run with one.
+- WebAssembly dispatch, hooks, scheduling, input, audio, file access and memory-card storage
+- a WebGPU backend for the original GS decoder, including tested texture, render-target, depth, blending and 16-bit framebuffer paths
+- worker-hosted execution that leaves Chromium's main thread free
+- a private build pipeline for the supported game executable
 
-The integrated development fixture has run near 60 updates per second in Chromium, but fixture pacing is not evidence of game performance. See [compatibility status](docs/COMPATIBILITY.md) for exact boundaries.
+The integrated fixture runs in Chromium and exercises graphics, audio, input and scheduling together. It contains no retail instructions or assets. See [compatibility](docs/COMPATIBILITY.md) and [graphics compatibility](docs/GRAPHICS_COMPATIBILITY.md) for the tested limits.
 
-## Requirements
+## Run the fixture
 
-- macOS or Linux development host with Git, Python 3.9+, Node.js 20+ and npm.
-- Chromium with WebGPU, WebAssembly threads, tail calls, `SharedArrayBuffer`, `OffscreenCanvas`, AudioWorklet, IndexedDB and Web Locks.
-- Emscripten **6.0.13** for the reproduced build. Other versions are unverified.
-- A loopback or secure origin with COOP/COEP headers; the included server supplies them.
-
-Clone with the pinned upstream submodule:
+You'll need Git, Python 3.9+, Node.js 20+, desktop Chromium and Emscripten 6.0.13. Clone the pinned upstream submodule, then prepare the patched local copy:
 
 ```sh
 git clone --recurse-submodules https://github.com/Prakhar-Tiwari-0/ac5-web.git
@@ -36,9 +26,7 @@ npm install
 python3 scripts/prepare_upstream.py
 ```
 
-Install and activate Emscripten 6.0.13 using the [official emsdk instructions](https://emscripten.org/docs/getting_started/downloads.html). Keep the SDK outside this repository.
-
-## Build and run the distributable fixture
+Install Emscripten 6.0.13 with the [official emsdk instructions](https://emscripten.org/docs/getting_started/downloads.html), activate it, and run:
 
 ```sh
 python3 scripts/build_dev.py \
@@ -47,24 +35,21 @@ python3 scripts/build_dev.py \
 python3 scripts/serve.py --build-dir build/dev
 ```
 
-Open `http://127.0.0.1:8781/` in desktop Chromium and choose **Run integrated subsystem fixture**. The fixture includes zero retail instructions or assets.
+Open `http://127.0.0.1:8781/` in Chromium and select **Run integrated subsystem fixture**. The local server supplies the COOP and COEP headers required by WebAssembly threads.
 
-Run contract tests and the full Chromium regression suite:
+For tests and exact environment details, read [docs/TESTING.md](docs/TESTING.md).
 
-```sh
-npm run test:contracts
-CHROME_PATH="/path/to/Chromium" \
-  python3 tests/check_browser.py --out test-results/chromium
-npm run audit
+## Try a private retail build
+
+This repository doesn't contain game files. You must provide your own legally obtained NTSC-U executable at `game/SLUS_208.51`.
+
+The supported file is 3,634,092 bytes, ELF32 little-endian MIPS, with this SHA-256:
+
+```text
+c3594227605307806592416dbd723bf5771952e279ee281a40da305426667385
 ```
 
-The server must be running while browser regressions execute. Exact coverage and expected results are in [testing](docs/TESTING.md).
-
-## Private retail build pipeline
-
-No game content is distributed. If you own the supported NTSC-U release, place its extracted executable at `game/SLUS_208.51` or pass another path. The required file is **3,634,092 bytes**, ELF32 little-endian MIPS, SHA-256 `c3594227605307806592416dbd723bf5771952e279ee281a40da305426667385`.
-
-First validate and generate the original code corpus without installing or invoking Emscripten:
+Generate the private source corpus first:
 
 ```sh
 python3 scripts/build.py \
@@ -74,9 +59,7 @@ python3 scripts/build.py \
   --generate-only
 ```
 
-`build/retail/build.json` records input identity, generation status, inventory and errors. Generation alone cannot create `retail.json`, compile any unit or pass a game gate. No ISO is required for this step. Input validation and generation precede compiler checks, so missing inputs produce `ELF_MISSING` even without a configured toolchain.
-
-Then compile and link with the same output directory; validated generated output is reused:
+Then compile and link it:
 
 ```sh
 python3 scripts/build.py \
@@ -86,24 +69,15 @@ python3 scripts/build.py \
   --elf game/SLUS_208.51
 ```
 
-Generated retail code and build products remain ignored and private. A local disc image is separately selected through the browser for content reads; it is neither uploaded nor copied wholesale into Wasm memory. This project does not bypass authentication, licensing or copy protection.
+Generated source and build products stay ignored by Git. Select your local disc image through the browser file picker; the runtime reads it lazily without uploading it or copying the whole file into Wasm memory.
 
-## Repository map
+The supported executable hasn't been available for testing. Gates A–F remain unpassed: full retail link, original-code execution, game initialization, first game frame, interactive menu and playable mission.
 
-- `src/runtime/`: browser bridges, scheduling controls, trace and fixture runtime code.
-- `src/renderer/`: WebGPU renderer, shaders and native mesh bridge.
-- `web/`: browser shell, worker lifecycle, input, audio and storage.
-- `scripts/`: preparation, corpus generation/linking, local server and hygiene audit.
-- `tests/`: native/Wasm parity, graphics, runtime and integrated browser fixtures.
-- `patches/`: reviewed portable modifications applied to a clean upstream checkout.
-- `third_party/upstream/`: pinned upstream Git submodule.
+## Project notes
 
-## Roadmap and limits
+- [Architecture](docs/ARCHITECTURE.md)
+- [Testing](docs/TESTING.md)
+- [Compatibility](docs/COMPATIBILITY.md)
+- [Provenance](docs/PROVENANCE.md)
 
-The next engineering milestone is a private, validated full retail corpus build followed by the earliest real startup trace. Remaining renderer work includes untested framebuffer/material states, native effects, residency-pressure recovery and real-scene synchronization. Safari, mobile browsers, physical controllers and full-game performance remain untested.
-
-Retail gates A–F—full corpus link, original execution, initialization, first real frame, interactive menu and playable mission—are all unpassed. Details are tracked in [compatibility](docs/COMPATIBILITY.md), [architecture](docs/ARCHITECTURE.md) and [provenance](docs/PROVENANCE.md).
-
-## Legal and provenance
-
-The project is licensed under Apache-2.0. Upstream attribution and modification details are in [NOTICE](NOTICE) and [provenance](docs/PROVENANCE.md). Ace Combat and related marks belong to their owners. Do not open issues or commits containing game executables, generated retail code, disc images, copyrighted assets or keys.
+Apache-2.0 covers this project's code. [NOTICE](NOTICE) records upstream attribution. Ace Combat and its related marks belong to their owners; don't commit executables, disc images, assets, generated retail code or keys.
