@@ -1,0 +1,15 @@
+{
+  "name": "ac5-web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Experimental browser compatibility runtime for Ace Combat 5",
+  "license": "Apache-2.0",
+  "scripts": {
+    "audit": "python3 scripts/audit_repository.py",
+    "serve": "python3 scripts/serve.py",
+    "test:contracts": "node --test tests/retail_contract.mjs tests/scheduling4-contract.mjs"
+  },
+  "devDependencies": {
+    "playwright": "1.62.1"
+  }
+}

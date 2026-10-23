@@ -1,0 +1,15 @@
+ac5-web
+Copyright 2026 Prakhar Tiwari
+
+This project builds on Ace-Combat-5-Static-recompilation by sal063:
+https://github.com/sal063/Ace-Combat-5-Static-recompilation
+The upstream project is licensed under the Apache License 2.0 and is included as
+a pinned Git submodule. Local modifications are represented by the patch under
+patches/ and by original browser runtime, renderer, platform and test sources.
+
+Ace Combat, Ace Combat 5: The Unsung War, PlayStation and related names and marks
+belong to their respective owners. This repository is an independent technical
+compatibility project and is not endorsed by Bandai Namco or Sony.
+
+No game executable, disc image, game asset or generated retail game code is
+included. Users must supply legally obtained inputs for private local testing.

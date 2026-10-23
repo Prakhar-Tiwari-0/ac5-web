@@ -1,0 +1,28 @@
+# Local builds and dependencies
+/build/
+/.cache/
+/node_modules/
+/test-results/
+/.toolchains/
+
+# User-supplied game material (never commit)
+/game/
+*.iso
+*.ISO
+SLUS_*
+*.elf
+
+# Generated compiler output
+*.o
+*.a
+*.wasm
+*.bin
+*.dylib
+*.so
+*.dll
+
+# Editor and OS files
+.DS_Store
+*.swp
+__pycache__/
+*.pyc
