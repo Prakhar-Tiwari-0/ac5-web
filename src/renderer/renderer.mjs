@@ -10,7 +10,8 @@ export class Ac5Renderer {
  constructor(canvas,device,info){
   this.canvas=canvas;this.device=device;this.info={vendor:info.vendor,architecture:info.architecture,device:info.device,description:info.description,isFallbackAdapter:info.isFallbackAdapter};
   this.commands=[];this.queuedBytes=0;this.inFlight=0;this.resources=new Map();this.depths=new Map();this.textures=new Map();this.pending=new Set();
-  this.metrics={draws:0,vertices:0,frames:0,snapshotBytes:0,shaderCompilationMs:0,textureBytes:0,targetBytes:0,renderCpuMs:0,primitivePasses:0};this.lost=null;this.destroyed=false;
+  this.metrics={draws:0,vertices:0,frames:0,snapshotBytes:0,shaderCompilationMs:0,textureBytes:0,targetBytes:0,renderCpuMs:0,primitivePasses:0,destinationCopies:0,depthSnapshots:0,commandSubmissions:0,uniformUploads:0,batchedPrimitives:0};this.lost=null;this.destroyed=false;
+  this.batchIndependent=true; // Disable for ordered primitive-reference comparisons.
   this.context=canvas.getContext('webgpu');this.format=navigator.gpu.getPreferredCanvasFormat();this.context.configure({device,format:this.format,alphaMode:'opaque'});
   device.addEventListener('uncapturederror',e=>{this.lost=e.error.message;});device.lost.then(i=>{if(!this.destroyed)this.lost=`device lost: ${i.reason}: ${i.message}`;});
   const start=performance.now();this.shader=device.createShaderModule({code:GS_SHADER});this.nativeShader=device.createShaderModule({code:createNativeShader(GS_SHADER)});this.pipelines=new Map();this.nativePipelines=new Map();this.depthPipelines=new Map();
@@ -76,16 +77,16 @@ export class Ac5Renderer {
   }
   r={texture,w,h,initialized};this.depths.set(id,r);this.metrics.targetBytes+=w*h*4;return r;
  }
- copyDepth(source,destination){
+ copyDepth(source,destination,commandEncoder=null){
   if(!this.depthCopyPipeline){const module=this.device.createShaderModule({code:`
     @group(0) @binding(0) var previous:texture_depth_2d;
     @vertex fn vs(@builtin(vertex_index)i:u32)->@builtin(position) vec4f{let xy=array<vec2f,3>(vec2f(-1,-1),vec2f(3,-1),vec2f(-1,3));return vec4f(xy[i],0,1);}
     @fragment fn fs(@builtin(position)p:vec4f)->@builtin(frag_depth) f32{let xy=vec2i(p.xy);if(any(xy>=vec2i(textureDimensions(previous)))){return 0.0;}return textureLoad(previous,xy,0);}`});
     this.depthCopyPipeline=this.device.createRenderPipeline({layout:'auto',vertex:{module,entryPoint:'vs'},fragment:{module,entryPoint:'fs',targets:[]},depthStencil:{format:'depth32float',depthWriteEnabled:true,depthCompare:'always'}});
   }
-  const encoder=this.device.createCommandEncoder(),pass=encoder.beginRenderPass({colorAttachments:[],depthStencilAttachment:{view:destination.createView(),depthLoadOp:'clear',depthClearValue:0,depthStoreOp:'store'}});
+  const encoder=commandEncoder||this.device.createCommandEncoder(),pass=encoder.beginRenderPass({colorAttachments:[],depthStencilAttachment:{view:destination.createView(),depthLoadOp:'clear',depthClearValue:0,depthStoreOp:'store'}});
   if(source){pass.setPipeline(this.depthCopyPipeline);pass.setBindGroup(0,this.device.createBindGroup({layout:this.depthCopyPipeline.getBindGroupLayout(0),entries:[{binding:0,resource:source.createView()}]}));pass.draw(3);}
-  pass.end();this.device.queue.submit([encoder.finish()]);
+  pass.end();if(!commandEncoder)this.device.queue.submit([encoder.finish()]);
  }
  async idle(){await Promise.all([...this.pending]);await this.device.queue.onSubmittedWorkDone();this.check();}
  flush(){
@@ -94,34 +95,43 @@ export class Ac5Renderer {
   for(const c of this.commands){
    const s=c.gs,{fb_w:w,fb_h:h,rt}=s,r=this.target(rt,w,h),depth=this.depth(s.zrt||0,w,h);
    const unit=[1,2,3][c.topology],vb=d.createBuffer({size:c.vertices.byteLength,usage:GPUBufferUsage.VERTEX|GPUBufferUsage.COPY_DST});d.queue.writeBuffer(vb,0,c.vertices);buffers.push(vb);
-   // Snapshot per primitive preserves blend/DATE/self-texture order even when
-   // geometry within a submitted draw overlaps. Correctness before batching.
-   for(let first=0;first<c.count;first+=unit){
-    const scratchKey=`${rt}/${w}/${h}`;let snapshot=scratch.get(scratchKey);if(!snapshot){snapshot=d.createTexture({size:[w,h],format:'rgba8unorm',usage:GPUTextureUsage.COPY_DST|GPUTextureUsage.TEXTURE_BINDING});scratch.set(scratchKey,snapshot);buffers.push(snapshot);scratchBytes+=w*h*4;}
-    const encoder=d.createCommandEncoder();encoder.copyTextureToTexture({texture:r.texture},{texture:snapshot},[w,h]);
+   const split=!s.zcopy&&s.ate&&s.atst!==1&&s.afail!==0;
+   const colorFeedback=s.tme&&!s.tex_depth&&s.tex_rt===rt+1;
+   const depthFeedback=s.tex_depth&&this.depths.get(s.tex_rt-1)?.texture===depth.texture;
+   // Prove independence instead of estimating triangle overlap. Hardware keeps
+   // depth/primitive ordering within a draw; destination-dependent states retain
+   // exact per-primitive snapshots and split-pass ordering in one command buffer.
+   const needsDestination=!!(s.abe||s.date||s.fb_mask||s.fb_psm===1||split||colorFeedback||s.shuffle_rg);
+   const batch=this.batchIndependent&&!needsDestination&&!depthFeedback;
+   let snapshot=this.fallback;
+   if(needsDestination){const scratchKey=`${rt}/${w}/${h}`;snapshot=scratch.get(scratchKey);if(!snapshot){snapshot=d.createTexture({size:[w,h],format:'rgba8unorm',usage:GPUTextureUsage.COPY_DST|GPUTextureUsage.TEXTURE_BINDING});scratch.set(scratchKey,snapshot);buffers.push(snapshot);scratchBytes+=w*h*4;}}
+   const encoder=d.createCommandEncoder(),uniforms=new Map();
+   for(let first=0;first<c.count;first+=batch?c.count:unit){
+    if(needsDestination){encoder.copyTextureToTexture({texture:r.texture},{texture:snapshot},[w,h]);this.metrics.destinationCopies++;}
     let image=this.fallback,depthImage=this.fallbackDepth;
     if(s.tme&&!s.tex_depth){if(s.tex_rt){const source=s.tex_rt-1;if(source===rt)image=snapshot;else{const t=this.resources.get(source);if(!t)throw Error(`render-target texture ${source} not produced`);image=t.texture;}}else image=this.textures.get(s.tex_index).texture;}
     if(s.tex_depth){const source=this.depths.get(s.tex_rt-1);if(!source||!source.initialized)throw Error(`depth texture ${s.tex_rt-1} not produced`);
      depthImage=source.texture;
      if(source.texture===depth.texture){const key=`depth/${s.zrt||0}/${w}/${h}`;let copy=scratch.get(key);
       if(!copy){copy=d.createTexture({size:[w,h],format:'depth32float',usage:GPUTextureUsage.RENDER_ATTACHMENT|GPUTextureUsage.TEXTURE_BINDING});scratch.set(key,copy);buffers.push(copy);scratchBytes+=w*h*4;}
-      this.copyDepth(source.texture,copy);depthImage=copy;
+      this.copyDepth(source.texture,copy,encoder);depthImage=copy;this.metrics.depthSnapshots++;
      }
     }
-    const split=!s.zcopy&&s.ate&&s.atst!==1&&s.afail!==0,passes=split?[1,2]:[0];
+    const passes=split?[1,2]:[0];
     for(const mode of passes){
      let color=3,write=s.zwrite?1:0;
      if(mode===2){if(s.afail===1)write=0;else if(s.afail===2)color=0;else if(s.afail===3){write=0;color=1;}else throw Error('invalid alpha fail operation');}
-     const words=new Uint32Array(64),floats=new Float32Array(words.buffer);FIELDS.forEach((name,i)=>{if(name==='tex_w'||name==='tex_h')floats[i]=s[name]||0;else words[i]=s[name]||0;});words[52]=mode;words[53]=color;
-     const ub=d.createBuffer({size:256,usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST});d.queue.writeBuffer(ub,0,words);buffers.push(ub);
+     let ub=uniforms.get(mode);
+     if(!ub){const words=new Uint32Array(64),floats=new Float32Array(words.buffer);FIELDS.forEach((name,i)=>{if(name==='tex_w'||name==='tex_h')floats[i]=s[name]||0;else words[i]=s[name]||0;});words[52]=mode;words[53]=color;words[54]=needsDestination?1:0;
+      ub=d.createBuffer({size:256,usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST});d.queue.writeBuffer(ub,0,words);buffers.push(ub);uniforms.set(mode,ub);this.metrics.uniformUploads++;}
      const pipeline=s.zcopy?this.depthPipelines.get(c.topology):c.native?this.nativePipelines.get(`${c.topology}/${s.zte?s.ztst:1}/${write}/${c.cull?1:0}`):this.pipelines.get(`${c.topology}/${s.zte?s.ztst:1}/${write}`);if(!pipeline)throw Error('unsupported pipeline state');
      const bind=d.createBindGroup({layout:this.layout,entries:[{binding:0,resource:{buffer:ub}},{binding:1,resource:image.createView()},{binding:2,resource:snapshot.createView()},{binding:3,resource:depthImage.createView()}]});
      const pass=encoder.beginRenderPass({colorAttachments:[{view:r.texture.createView(),loadOp:'load',storeOp:'store'}],depthStencilAttachment:{view:depth.texture.createView(),depthLoadOp:depth.initialized?'load':'clear',depthClearValue:0,depthStoreOp:'store'}});
      const sx=Math.max(0,Math.min(w,s.sx0)),sy=Math.max(0,Math.min(h,s.sy0)),sw=Math.max(0,Math.min(w,s.sx1+1)-sx),sh=Math.max(0,Math.min(h,s.sy1+1)-sy);
-     pass.setPipeline(pipeline);pass.setBindGroup(0,bind);pass.setVertexBuffer(0,vb);pass.setScissorRect(sx,sy,sw,sh);if(sw&&sh)pass.draw(unit,1,first);pass.end();depth.initialized=true;this.metrics.primitivePasses++;
+     pass.setPipeline(pipeline);pass.setBindGroup(0,bind);pass.setVertexBuffer(0,vb);pass.setScissorRect(sx,sy,sw,sh);if(sw&&sh)pass.draw(batch?c.count:unit,1,first);pass.end();depth.initialized=true;this.metrics.primitivePasses++;
     }
-    d.queue.submit([encoder.finish()]);
    }
+   d.queue.submit([encoder.finish()]);this.metrics.commandSubmissions++;if(batch)this.metrics.batchedPrimitives+=c.count/unit;
    this.metrics.draws++;this.metrics.vertices+=c.count;
   }
   this.commands.length=0;this.queuedBytes=0;this.inFlight++;this.track(d.queue.onSubmittedWorkDone().then(()=>{buffers.forEach(b=>b.destroy());this.inFlight--;}));this.metrics.renderCpuMs+=performance.now()-start;this.metrics.lastScratchBytes=scratchBytes;this.metrics.peakResourceBytes=Math.max(this.metrics.peakResourceBytes||0,this.metrics.textureBytes+this.metrics.targetBytes+scratchBytes+buffers.reduce((n,b)=>n+(b.size||0),0));

@@ -55,6 +55,39 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
     equal('unaligned multirow upload width '+w,Array.from(got),Array.from(bytes));uploadPixels+=w*h;
    }
    checks.push({case:'queue.writeTexture tight/sliced multirow uploads and padded readback',widths:[1,2,3,7,63,64,65,127,257],pixels:uploadPixels});
+   function tiled(nx,ny,rt){
+    const w=nx*8,h=ny*8,v=new Float32Array(nx*ny*12*12);let at=0;
+    for(let y=0;y<ny;y++)for(let x=0;x<nx;x++)for(const layer of [0,1]){
+     const xy=[0,0,8,0,0,8,8,0,8,8,0,8];
+     for(let i=0;i<6;i++){v.set([x*8+xy[i*2],y*8+xy[i*2+1],layer?.2:.8,layer?255:(x*7)&255,layer?0:(y*11)&255,72,128,0,0,1,1,0],at);at+=12;}
+    }
+    return {topology:2,gs:{fb_w:w,fb_h:h,fb_psm:0,rt,zrt:rt,sx0:0,sy0:0,sx1:w-1,sy1:h-1,zte:1,ztst:3,zwrite:1},vertices:new Uint8Array(v.buffer),count:at/12};
+   }
+   async function measure(command,batch){
+    await r.idle();r.batchIndependent=batch;const before={...r.metrics},start=performance.now();
+    r.draw(command);const pixels=await r.pixels(command.gs.rt);
+    return {pixels,passes:r.metrics.primitivePasses-before.primitivePasses,copies:r.metrics.destinationCopies-before.destinationCopies,submissions:r.metrics.commandSubmissions-before.commandSubmissions,uniformUploads:r.metrics.uniformUploads-before.uniformUploads,cpuMs:r.metrics.renderCpuMs-before.renderCpuMs,readbackMs:performance.now()-start};
+   }
+   const reference=await measure(tiled(8,4,800),false),batched=await measure(tiled(8,4,801),true);
+   equal('batched depth/overlap vs ordered primitive reference',Array.from(batched.pixels),Array.from(reference.pixels));
+   if(reference.passes!==128||batched.passes!==1||batched.copies!==0||batched.submissions!==1||batched.uniformUploads!==1)throw Error('independent batching metrics');
+   const largeCommand=tiled(80,56,802),large=await measure(largeCommand,true);
+   for(let y=0;y<448;y++)for(let x=0;x<640;x++){
+    const i=(y*640+x)*4;equal('retail-sized tile/depth '+x+'/'+y,Array.from(large.pixels.slice(i,i+4)),[((x>>3)*7)&255,((y>>3)*11)&255,72,255]);
+   }
+   if(large.passes!==1||large.copies!==0||large.submissions!==1)throw Error('large draw not batched');
+   const summary=({pixels,...metrics})=>metrics;
+   checks.push({case:'independent primitives with overlapping depth writes',reference:summary(reference),batched:summary(batched),large:{triangles:largeCommand.count/3,pixels:640*448,...summary(large)}});
+   // Overlapping destination-dependent triangles must not take that fast path.
+   draw(803,{}, {color:[0,0,0,128]});await r.pixels(803);
+   m._ac5_renderer_fixture_begin(803);const s={};fields.forEach((k,i)=>s[k]=0);
+   Object.assign(s,{fb_w:64,fb_h:64,rt:803,zrt:803,sx1:63,sy1:63,ztst:1,abe:1,alpha_a:0,alpha_b:2,alpha_c:2,alpha_d:1,alpha_fix:64});
+   const repeated=new Float32Array(20*6*12),xy=[0,0,64,0,0,64,64,0,64,64,0,64];
+   for(let n=0;n<120;n++)repeated.set([xy[(n%6)*2],xy[(n%6)*2+1],.5,8,0,0,128,0,0,1,1,0],n*12);
+   const blend=await measure({topology:2,gs:s,vertices:new Uint8Array(repeated.buffer),count:120},true);
+   equal('overlapping blended primitives remain ordered',pixel(blend.pixels),[80,0,0,255]);
+   if(blend.copies!==40||blend.passes!==40||blend.submissions!==1||blend.uniformUploads!==1)throw Error('dependent draw did not retain ordered snapshots');
+   checks.push({case:'40 overlapping blend primitives in one submission',...summary(blend)});
    await r.idle();const error=await r.device.popErrorScope();if(error)throw Error(error.message);
    const result={gpu:r.info,checks,metrics:{...r.metrics}};r.destroy();return result;
   });assert.deepEqual(errors,[]);report.pass=true;

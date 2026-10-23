@@ -71,6 +71,10 @@ fn masked(value:vec4f,previous:vec4f)->vec4f {
  }
  return vec4f((src&~masks)|(dst&masks))/255.0;
 }
+fn previous_color(xy:vec2i)->vec4f {
+ if(g(54u)==0u){return vec4f(0);}
+ return textureLoad(destination,xy,0);
+}
 struct DepthOutput {@location(0) color:vec4f,@builtin(frag_depth) depth:f32}
 @fragment fn fs_depth(i:V)->DepthOutput {
  // Original gs_zcopy.frag clamps coordinates; it does not use GS wrap/TFX/alpha.
@@ -84,10 +88,10 @@ struct DepthOutput {@location(0) color:vec4f,@builtin(frag_depth) depth:f32}
   let c=textureLoad(depth_image,clamp(xy+vec2i(0,1),vec2i(0),size-1),0);let d=textureLoad(depth_image,clamp(xy+vec2i(1,1),vec2i(0),size-1),0);
   depth=mix(mix(a,b,w.x),mix(c,d,w.x),w.y);
  }
- var out:DepthOutput;out.depth=depth;out.color=masked(vec4f(depth,0,0,1),textureLoad(destination,vec2i(i.pos.xy),0));return out;
+ var out:DepthOutput;out.depth=depth;out.color=masked(vec4f(depth,0,0,1),previous_color(vec2i(i.pos.xy)));return out;
 }
 @fragment fn fs(i:V)->@location(0) vec4f {
- let previous=textureLoad(destination,vec2i(i.pos.xy),0);
+ let previous=previous_color(vec2i(i.pos.xy));
  if(g(4u)!=0u){
   let rg=textureLoad(image,vec2i(i.pos.xy),0).rg;var green=u32(round(rg.g*255.0));
   var ta=(g(5u)>>select(0u,1u,(green&128u)!=0u))&1u;

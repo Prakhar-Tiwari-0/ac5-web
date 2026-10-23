@@ -38,3 +38,23 @@ AC5_URL=http://127.0.0.1:8784/ CHROME_PATH="/path/to/Chromium" \
 Initial verification: Chromium 156.0.8078.48 on macOS 26.6.2 ARM64, Apple Metal,
 Emscripten 6.0.13. Original renderer regression: 3,514 comparisons, zero
 mismatches; original texture, blend and depth/shuffle regressions also pass.
+
+## Submission and primitive batching
+
+Destination-independent draws now issue all primitives in one render pass, with
+one uniform upload and one command submission. This includes textured opaque
+meshes and ordered depth-tested geometry. Blending, DATE, masks, CT24 alpha
+preservation, alpha-fail split passes and color/depth feedback take a conservative
+ordered path. Their copies and passes are encoded in one submission per original
+command; uniform buffers are shared by state/pass mode, not recreated per triangle.
+Depth feedback copies are recorded in that same encoder to preserve ordering.
+
+Chromium measurements: a 17,920-triangle, 640x448 overlapping-depth draw used one
+pass, zero destination copies, one uniform upload and one command submission;
+all 286,720 output pixels matched the CPU tile/depth oracle. Encoding took 0.79 ms
+and draw-through-readback 2.08 ms in one measured run (not a GPU timestamp or game
+FPS). A 128-triangle comparison used 128 passes on the forced primitive reference
+path versus one batched pass, with byte-identical pixels. Forty overlapping blend
+primitives retained forty snapshots/passes but used one submission and one uniform
+upload. Dependent-copy cost, pass count, and per-original-command submissions
+remain limitations; this is a measured fast path, not general blend batching.
