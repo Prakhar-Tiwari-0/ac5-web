@@ -61,6 +61,14 @@ fn masked(value:vec4f,previous:vec4f)->vec4f {
  if((g(53u)&1u)==0u){c=vec4f(previous.rgb,c.a);}if((g(53u)&2u)==0u||g(2u)==1u){c.a=previous.a;}
  let mask=g(3u);let src=vec4u(round(c*255.0));let dst=vec4u(round(previous*255.0));
  let masks=vec4u(mask&255u,(mask>>8u)&255u,(mask>>16u)&255u,mask>>24u);
+ if(g(2u)==2u||g(2u)==10u){
+  // RGB5A1 stored in an expanded RGBA target: low RGB bits are discarded,
+  // and the GS alpha MSB (0x80, represented as 1.0 here) is the only alpha bit.
+  // Masking the expanded bits is equivalent to masking the packed RGB5A1 word.
+  let rgb=((src.rgb&~masks.rgb)|(dst.rgb&masks.rgb))&vec3u(248u);
+  let alpha=select(select(0.0,1.0,c.a>=1.0),previous.a,(mask&0x80000000u)!=0u);
+  return vec4f(vec3f(rgb)/255.0,alpha);
+ }
  return vec4f((src&~masks)|(dst&masks))/255.0;
 }
 struct DepthOutput {@location(0) color:vec4f,@builtin(frag_depth) depth:f32}

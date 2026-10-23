@@ -56,7 +56,7 @@ void ps2_vk_draw(int topology,const ps2_vk_state *st,const ps2_vk_vertex *v,int 
  if(!st || !v || topology<0 || topology>2 || n>1048576)ps2_fatal("webgpu: invalid draw command");
  int shuffle=st->shuffle_rg&&st->tme&&st->tex_rt&&st->tex_self&&st->fb_psm==10&&!st->abe&&!st->ate&&!st->date&&!st->zwrite&&!st->fb_mask&&!st->fba;
  int zcopy=st->zcopy&&st->tme&&st->tex_depth&&st->tex_rt&&(st->fb_psm==48||st->fb_psm==49||st->fb_psm==50||st->fb_psm==51);
- if(((st->fb_psm!=0&&st->fb_psm!=1)&&!shuffle&&!zcopy)||(st->shuffle_rg&&!shuffle)||(st->zcopy&&!zcopy)||(st->tex_depth&&(!st->tme||!st->tex_rt)))
+ if(((st->fb_psm!=0&&st->fb_psm!=1&&st->fb_psm!=2&&st->fb_psm!=10)&&!shuffle&&!zcopy)||(st->shuffle_rg&&!shuffle)||(st->zcopy&&!zcopy)||(st->tex_depth&&(!st->tme||!st->tex_rt)))
   ps2_fatal("webgpu: unsupported draw state psm=%u shuffle=%d zcopy=%d depth-texture=%d",st->fb_psm,st->shuffle_rg,st->zcopy,st->tex_depth);
  if(st->abe && (st->alpha_a>2 || st->alpha_b>2 || st->alpha_c>2 || st->alpha_d>2))ps2_fatal("webgpu: invalid GS blend selector");
  if(st->tme && !st->tex_rt && st->tex_index>=ntextures)ps2_fatal("webgpu: unknown texture index %u",st->tex_index);
@@ -116,7 +116,7 @@ EMSCRIPTEN_KEEPALIVE void ac5_webgpu_owner_mesh_draw(int t,const ps2_vk_state*s,
 int ps2_vk_mesh_available(void){return ps2_vk_enabled()&&MAIN_THREAD_EM_ASM_INT({return Module['_ac5_webgpu_owner_mesh_ready']();});}
 int ps2_vk_mesh_material_ok(const ps2_vk_state*s){
  if(!ps2_vk_mesh_available())return 0;
- return !s||((s->fb_psm==0||s->fb_psm==1)&&!s->shuffle_rg&&!s->tex_depth&&!s->zcopy&&!s->fst&&!s->native_region&&s->wms<2&&s->wmt<2);
+ return !s||((s->fb_psm==0||s->fb_psm==1||s->fb_psm==2||s->fb_psm==10)&&!s->shuffle_rg&&!s->tex_depth&&!s->zcopy&&!s->fst&&!s->native_region&&s->wms<2&&s->wmt<2);
 }
 int ps2_vk_mesh_room(u32 v,u32 i,u32 d){return ps2_vk_mesh_available()&&v<=NM_VERTS-nm_nv&&i<=NM_INDICES-nm_ni&&d<=NM_DRAWS-nm_nd;}
 int ps2_vk_mesh_store(const u8*r,u32 n,const u32*i,u32 ni,u32*b,u32*f){
@@ -127,7 +127,7 @@ int ps2_vk_mesh_store(const u8*r,u32 n,const u32*i,u32 ni,u32*b,u32*f){
 }
 void ps2_vk_draw_mesh_topo(const ps2_vk_state*s,const ps2_vk_mesh_block*b,u32 v,u32 f,u32 n,int c,int t){
  if(ps2_vk_before_record)ps2_vk_before_record();if(!n)return;
- if(!s||!b||!ps2_vk_mesh_available()||((s->fb_psm!=0&&s->fb_psm!=1)||s->shuffle_rg||s->tex_depth||s->zcopy||s->native_region)||t<0||t>2||n%((u32[]){1,2,3})[t]||v>=nm_nv||f>nm_ni||n>nm_ni-f||nm_nd>=NM_DRAWS||b->prog>5||!isfinite(b->zmax)||b->zmax<=0||!s->fb_w||!s->fb_h)ps2_fatal("webgpu: unsupported/invalid native mesh draw");
+ if(!s||!b||!ps2_vk_mesh_available()||((s->fb_psm!=0&&s->fb_psm!=1&&s->fb_psm!=2&&s->fb_psm!=10)||s->shuffle_rg||s->tex_depth||s->zcopy||s->native_region)||t<0||t>2||n%((u32[]){1,2,3})[t]||v>=nm_nv||f>nm_ni||n>nm_ni-f||nm_nd>=NM_DRAWS||b->prog>5||!isfinite(b->zmax)||b->zmax<=0||!s->fb_w||!s->fb_h)ps2_fatal("webgpu: unsupported/invalid native mesh draw");
  u32 unit=((u32[]){1,2,3})[t],count=0,capacity=n*(t==2?2:1);
  ac5_mesh_vertex*out=malloc(capacity*sizeof *out);if(!out)ps2_fatal("webgpu: native vertex allocation failed");
  for(u32 j=0;j<n;j+=unit){ac5_mesh_vertex src[3],poly[4];for(u32 k=0;k<unit;k++){u32 ix=nm_indices[f+j+k];if(ix>=nm_nv-v)ps2_fatal("webgpu: native mesh index outside arena");ac5_mesh_transform(nm_records+(v+ix)*64u,b,s->fb_w,s->fb_h,src+k);}

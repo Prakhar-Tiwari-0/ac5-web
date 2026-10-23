@@ -37,9 +37,11 @@ export class Ac5Renderer {
  track(promise){this.pending.add(promise);promise.then(()=>this.pending.delete(promise),error=>{this.pending.delete(promise);this.lost=error.message||String(error);});return promise;}
  retire(items){this.track(this.device.queue.onSubmittedWorkDone().then(()=>items.forEach(r=>r.destroy())));}
  uploadTexture(id,bytes,w,h){
-  this.check();if(!Number.isInteger(id)||this.textures.has(id)||!w||!h||bytes.byteLength!==w*h*4)throw Error('invalid/duplicate texture upload');
+  this.check();if(!Number.isInteger(id)||this.textures.has(id)||!Number.isInteger(w)||!Number.isInteger(h)||w<1||h<1||w>4096||h>4096||bytes.byteLength!==w*h*4)throw Error('invalid/duplicate texture upload');
   if(this.metrics.textureBytes+bytes.byteLength>256*1024*1024)throw Error('WebGPU texture store exceeds 256 MiB');
   const texture=this.device.createTexture({size:[w,h],format:'rgba8unorm',usage:GPUTextureUsage.TEXTURE_BINDING|GPUTextureUsage.COPY_DST|GPUTextureUsage.COPY_SRC});
+  // queue.writeTexture accepts tightly packed rows. The 256-byte rule applies
+  // to encoder buffer/texture copies (e.g. pixels()), not to this queue upload.
   this.device.queue.writeTexture({texture},bytes,{bytesPerRow:w*4},[w,h]);this.textures.set(id,{texture,w,h});this.metrics.textureBytes+=bytes.byteLength;
  }
  drawNative(command){this.draw({...command,native:true});}
@@ -48,7 +50,7 @@ export class Ac5Renderer {
   if(!command.gs){const [fb_w,fb_h,sx0,sx1,sy0,sy1,rt,zrt]=command.state;command.gs={fb_w,fb_h,sx0,sx1,sy0,sy1,rt,zrt,ztst:1};}
   const s=command.gs;const shuffle=s.shuffle_rg&&s.tme&&s.tex_rt&&s.tex_self&&s.fb_psm===10&&!s.abe&&!s.ate&&!s.date&&!s.zwrite&&!s.fb_mask&&!s.fba;
   const zcopy=s.zcopy&&s.tme&&s.tex_depth&&s.tex_rt&&[48,49,50,51].includes(s.fb_psm);
-  if((![0,1].includes(s.fb_psm||0)&&!shuffle&&!zcopy)||(s.shuffle_rg&&!shuffle)||(s.zcopy&&!zcopy)||(s.tex_depth&&(!s.tme||!s.tex_rt)))throw Error('unsupported draw state');
+  if((![0,1,2,10].includes(s.fb_psm||0)&&!shuffle&&!zcopy)||(s.shuffle_rg&&!shuffle)||(s.zcopy&&!zcopy)||(s.tex_depth&&(!s.tme||!s.tex_rt)))throw Error('unsupported draw state');
   if(s.tme&&!s.tex_rt&&!this.textures.has(s.tex_index))throw Error('unknown texture');
   if(this.commands.length>=4096||this.queuedBytes+command.vertices.byteLength>64*1024*1024)throw Error('WebGPU command queue capacity; runtime must yield');
   this.commands.push({...command,gs:{...command.gs},vertices:command.vertices.slice()});this.queuedBytes+=command.vertices.byteLength;this.metrics.snapshotBytes+=command.vertices.byteLength;

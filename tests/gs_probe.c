@@ -35,6 +35,17 @@ EMSCRIPTEN_KEEPALIVE int ac5_gs_probe(void){
  ps2_gs_write_reg(5,(8u*16ull)|((56u*16ull)<<16));
  return 1;
 }
+/* A real FRAME register format, not a texture-format test. */
+EMSCRIPTEN_KEEPALIVE int ac5_gs_frame16_probe(u32 psm){
+ if(psm!=2&&psm!=10)return -1;
+ ps2_gs_init();ps2_gs_write_reg(0x4c,(1ull<<16)|((u64)psm<<24));
+ ps2_gs_write_reg(0x40,(63ull<<16)|(63ull<<48));
+ ps2_gs_write_reg(0x4e,1ull<<32);ps2_gs_write_reg(0x47,0);
+ ps2_gs_write_reg(0,3u|8u);ps2_gs_write_reg(1,(0x3f800000ull<<32)|0x80673bcd);
+ const u32 xy[12]={0,0,64,0,0,64,64,0,64,64,0,64};
+ for(int i=0;i<6;i++)ps2_gs_write_reg(5,(xy[i*2]*16ull)|((xy[i*2+1]*16ull)<<16));
+ return 0;
+}
 /* Actual upstream SDL audio backend + SPU2 mixer; only waveform is synthetic. */
 #include <emscripten/heap.h>
 extern u8 *ps2_spu2_ram;
