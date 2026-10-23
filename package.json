@@ -7,7 +7,7 @@
   "scripts": {
     "audit": "python3 scripts/audit_repository.py",
     "serve": "python3 scripts/serve.py",
-    "test:contracts": "node --test tests/retail_contract.mjs tests/scheduling4-contract.mjs"
+    "test:contracts": "node --test tests/retail_contract.mjs tests/scheduling4-contract.mjs tests/boot-reliability.mjs"
   },
   "devDependencies": {
     "playwright": "1.62.1"

@@ -23,6 +23,8 @@ The tested configuration was macOS 26.6.2 ARM64, Chromium 156.0.8078.48, Apple M
 
 Safari, iOS, Android, non-Apple GPUs, physical controllers and complete fullscreen/device-loss behavior have not been validated.
 
+The retail manifest disables the upstream 10-second no-field watchdog, and the browser session does not stop a silent startup for lack of frames. Gates A–F are unchanged: no retail executable has been linked or executed.
+
 ## Main blockers
 
 1. A legally obtained supported `SLUS_208.51` is required to generate and measure the real corpus. Disc content is separately needed for startup and gameplay.

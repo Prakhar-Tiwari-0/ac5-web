@@ -80,6 +80,21 @@ class CorpusTests(unittest.TestCase):
         self.assertIn('-sPROXY_TO_PTHREAD=1',link);self.assertIn('-sERROR_ON_UNDEFINED_SYMBOLS=1',link)
         self.assertNotIn('-sERROR_ON_UNDEFINED_SYMBOLS=0',link)
         self.assertIn('generated/ps2_image.bin@/game/ps2_image.bin',link)
+        self.assertEqual(corpus.PTHREAD_POOL_SIZE, 16)
+        self.assertEqual(corpus.RETAIL_GUEST_ARGUMENTS[-2:], ['--watchdog', '0'])
+        self.assertIn('-sPTHREAD_POOL_SIZE=16', link)
+        self.assertNotIn('-sPTHREAD_POOL_SIZE=4', link)
+        bridge = (HERE / 'src/runtime/corpus_bridge.c').read_text()
+        self.assertIn('setenv("PS2_ASYNC_GFX","0",1)', bridge)
+        self.assertIn('setenv("PS2_RN_SUN","0",1)', bridge)
+        gpu = (HERE / 'src/renderer/ps2_webgpu.c').read_text()
+        self.assertNotIn('ps2_fatal("webgpu: renderer state capture', gpu)
+        self.assertNotIn('ps2_fatal("webgpu: renderer state serialization', gpu)
+        self.assertIn('continuing without a GPU snapshot', gpu)
+        session = (HERE / 'web/retail-session.mjs').read_text()
+        self.assertNotIn('armWatchdog', session)
+        self.assertNotIn('RETAIL_STARTUP_STALLED', session)
+        self.assertIn("'--watchdog', '0'", session)
 
     def test_real_generator_synthetic_elf(self):
         """Same generator/cache engine, self-authored MIPS return; never retail validation."""

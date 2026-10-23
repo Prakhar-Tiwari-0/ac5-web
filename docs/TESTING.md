@@ -8,7 +8,7 @@ Tests are deliberately labeled by evidence type. None of the included fixtures c
 npm run test:contracts
 ```
 
-These exercise retail-manifest validation and scheduling message contracts without compiling Wasm.
+These exercise retail-manifest validation, silent-startup session handling, and scheduling message contracts without compiling Wasm. With a local Emscripten install, `EMCC=/path/to/emcc python3 tests/run_thread_pool.py` also checks that the retail pthread pool can create threads beyond the previous pool of 4.
 
 ## Build fixtures
 
