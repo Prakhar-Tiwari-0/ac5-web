@@ -89,8 +89,8 @@ const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),asse
   await page.close();result.fullRuntimeFixture=[];
   for(const option of ['--gs-test','--vu-test','--vif-test','--spu2-test','--hle-test']){
    const p=await context.newPage();await p.goto(process.env.AC5_URL||'http://127.0.0.1:8781/');
-   await p.evaluate(opt=>{window.fixtureLogs=[];window.fixtureExit=null;window.Module={arguments:[opt],print:m=>window.fixtureLogs.push(m),printErr:m=>window.fixtureLogs.push(m),onExit:code=>window.fixtureExit=code};},option);
-   await p.addScriptTag({url:'/local/runtime.js'});await p.waitForFunction(()=>window.fixtureExit!==null,{timeout:20000});
+   await p.evaluate(async opt=>{window.fixtureLogs=[];window.fixtureExit=null;const create=(await import('/local/fixture-runtime/ac5.mjs')).default;window.fixtureModule=await create({noInitialRun:true,print:m=>window.fixtureLogs.push(m),printErr:m=>window.fixtureLogs.push(m),onExit:code=>window.fixtureExit=code});window.fixtureModule.callMain([opt]);},option);
+   await p.waitForFunction(()=>window.fixtureExit!==null,null,{timeout:20000});
    const r=await p.evaluate(()=>({exit:window.fixtureExit,logs:window.fixtureLogs}));r.option=option;
    if(option==='--hle-test'){assert.equal(r.exit,1);assert(r.logs.some(l=>l.includes('indirect branch to 0032AD00')));r.status='BLOCKED_RETAIL_FUNCTION_REQUIRED';}
    else{assert.equal(r.exit,0);r.status='PASS';}

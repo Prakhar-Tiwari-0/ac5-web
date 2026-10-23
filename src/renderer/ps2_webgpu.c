@@ -180,5 +180,12 @@ u32 ps2_vk_texture_native(u32 s,u32 x,u32 y,u32 w,u32 h){
 }
 const u8 *ps2_vk_texture_pixels(u32 i){web_texture*t=texture_get(i);if(!t)ps2_fatal("webgpu: stale/unknown texture handle");t->touched=++texture_clock;return t->pixels;}
 int ps2_vk_screenshot(const char*p){(void)p;ps2_log("webgpu: screenshot export not implemented");return -1;}
-void ps2_vk_statecap(const char*d){(void)d;ps2_fatal("webgpu: renderer state capture not implemented");}
-void ps2_vk_state_save(ps2_state_put put,void*ud){(void)put;(void)ud;ps2_fatal("webgpu: renderer state serialization not implemented");}
+void ps2_vk_statecap(const char*d){
+ ps2_log("webgpu: renderer state capture is not implemented; no GPU snapshot written%s%s",
+         d&&*d?" to ":"",d&&*d?d:"");
+}
+void ps2_vk_state_save(ps2_state_put put,void*ud){
+ static const char note[]="unsupported";
+ ps2_log("webgpu: renderer state serialization is not implemented; continuing without a GPU snapshot");
+ if(put)put(ud,"webgpu",note,sizeof note-1);
+}

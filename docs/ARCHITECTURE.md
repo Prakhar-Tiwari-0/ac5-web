@@ -33,3 +33,5 @@ memo checks browser handle liveness before returning a cached draw state. See
 and remaining format, pressure and rendering limits.
 
 Pause and stop are acknowledged barriers. The original EE owner parks at guarded safe points, the timer avoids accumulated vblank debt, pending GPU work completes, open dirty cards serialize, and IDBFS flush completes before durability is reported. Retail scheduling remains unvalidated because no retail corpus has executed.
+
+The retail link precreates 16 pthreads. `ac5_retail_prepare` sets `PS2_ASYNC_GFX=0` and `PS2_RN_SUN=0` before guest `main`. The retail manifest passes `--watchdog 0` as its own argument so the upstream 10-second no-field watchdog does not exit during the long silent startup. The browser session does not treat missing frames as failure; Stop still cancels, and a worker error or non-zero guest exit still fails the attempt. Optional renderer state capture logs that it is unsupported and returns. None of this executes retail code or passes Gates A–F.

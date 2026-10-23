@@ -6,7 +6,11 @@
 #include <emscripten/heap.h>
 extern void ps2_pad_publish(int port, const ps2_pad_state *state);
 extern void ps2_request_exit(void);
-EMSCRIPTEN_KEEPALIVE void ac5_retail_prepare(void){setenv("PS2_RN_SUN","0",1);}
+EMSCRIPTEN_KEEPALIVE void ac5_retail_prepare(void){
+ /* Keep GS on the EE thread and leave native sun draws on the GS path. */
+ setenv("PS2_RN_SUN","0",1);
+ setenv("PS2_ASYNC_GFX","0",1);
+}
 EMSCRIPTEN_KEEPALIVE void ac5_retail_input(int connected,unsigned buttons,unsigned lx,unsigned ly,
  unsigned rx,unsigned ry,unsigned l2,unsigned r2) {
  ps2_pad_state s={connected,(u16)buttons,(u8)lx,(u8)ly,(u8)rx,(u8)ry,(u8)l2,(u8)r2};

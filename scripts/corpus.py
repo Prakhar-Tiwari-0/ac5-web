@@ -17,6 +17,11 @@ from pathlib import Path
 
 SUPPORTED_SIZE = 3634092
 SUPPORTED_SHA256 = 'c3594227605307806592416dbd723bf5771952e279ee281a40da305426667385'
+# Upstream exits when no field arrives for 10 seconds. The first picture takes longer.
+RETAIL_GUEST_ARGUMENTS = ['--data', '/game', '--disc', '/disc/game.iso', '--watchdog', '0']
+# Proxied main, the guest watchdog thread, and the vblank timer start before guest
+# code. Guest CreateThread calls need pool slots beyond that set.
+PTHREAD_POOL_SIZE = 16
 CONFIGS = ['ida_db.json', 'ida_seeds.json', 'sdk_symbols.json',
            'manual_symbols.json', 'overrides.json', 'hooks.json']
 RAM_SIZE = 32 * 1024 * 1024
@@ -280,7 +285,7 @@ def link_command(compiler, objects, out, generated, mode='retail'):
         *map(str, objects), '--embed-file', str(generated / 'ps2_image.bin') + '@/game/ps2_image.bin',
         '-lworkerfs.js', '-lidbfs.js', '-sMODULARIZE=1', '-sEXPORT_ES6=1',
         '-sEXPORT_NAME=createAC5', '-sENVIRONMENT=web,worker,node',
-        '-sINVOKE_RUN=0', '-sEXIT_RUNTIME=1', '-sPTHREAD_POOL_SIZE=4', '-sPROXY_TO_PTHREAD=1',
+        '-sINVOKE_RUN=0', '-sEXIT_RUNTIME=1', '-sPTHREAD_POOL_SIZE=%d' % PTHREAD_POOL_SIZE, '-sPROXY_TO_PTHREAD=1',
         '-sINITIAL_MEMORY=134217728', '-sMAXIMUM_MEMORY=536870912',
         '-sALLOW_MEMORY_GROWTH=1', '-sSTACK_SIZE=2097152',
         "-sEXPORTED_RUNTIME_METHODS=['FS','WORKERFS','IDBFS','callMain','HEAPU8']",

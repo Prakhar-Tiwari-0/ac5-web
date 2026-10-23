@@ -15,7 +15,7 @@ Canonical-workspace transition validation reproduced the complete build, all nin
 
 ## Verified compatibility components
 
-The latest graphics-compatibility build compiled 96 of 96 open runtime and fixture units and linked a 1,499,893-byte Wasm module. Original GS, VU, VIF and SPU2 suites passed in Node and Chromium. Renderer regressions retained the original 3,514 pixel comparisons with zero mismatches, 22 native mesh checks (including both 16-bit target formats), and 99 depth/shuffle backend cases plus two original GS recognition sequences. The focused graphics suite additionally validates tight-row uploads, a 17,920-triangle batch and coordinated cache eviction; see [measured scope](GRAPHICS_COMPATIBILITY.md).
+The combined graphics/boot-reliability build compiled 96 of 96 open runtime and fixture units and linked a 1,500,164-byte Wasm module. Original GS, VU, VIF and SPU2 suites passed in Node and Chromium. Renderer regressions retained the original 3,514 pixel comparisons with zero mismatches, 22 native mesh checks (including both 16-bit target formats), and 99 depth/shuffle backend cases plus two original GS recognition sequences. The focused graphics suite additionally validates tight-row uploads, a 17,920-triangle batch and coordinated cache eviction; see [measured scope](GRAPHICS_COMPATIBILITY.md) and [integration validation](INTEGRATION.md).
 
 The original guest scheduler fixture propagated input, GS output and SPU2 audio; a 16-second pause held fields and audio stable, resume avoided wall-time debt, and dirty memory-card data reloaded in a fresh module. Large-file fixtures exercised reads beyond 4 GiB. These results remain component and integration evidence only.
 
@@ -24,6 +24,8 @@ The original guest scheduler fixture propagated input, GS output and SPU2 audio;
 The tested configuration was macOS 26.6.2 ARM64, Chromium 156.0.8078.48, Apple Metal, Node 24.20.0, Emscripten 6.0.13 and LLVM 24.0.0git. The runtime requires loopback/HTTPS, cross-origin isolation, WebAssembly threads and tail calls, worker WebGPU, OffscreenCanvas, AudioWorklet, IndexedDB and Web Locks.
 
 Safari, iOS, Android, non-Apple GPUs, physical controllers and complete fullscreen/device-loss behavior have not been validated.
+
+The retail manifest disables the upstream 10-second no-field watchdog, and the browser session does not stop a silent startup for lack of frames. Gates A–F are unchanged: no retail executable has been linked or executed.
 
 ## Main blockers
 

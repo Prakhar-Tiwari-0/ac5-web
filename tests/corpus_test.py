@@ -16,7 +16,27 @@ import corpus
 import build as build_cli
 
 
+def prepared_upstream():
+    upstream = Path(os.environ.get('AC5_UPSTREAM', str(HERE/'.cache/upstream'))).resolve()
+    emitter = upstream/'tools/ps2recomp/emit.py'
+    if not emitter.is_file() or 'ps2_hook_enter_portable' not in emitter.read_text():
+        raise RuntimeError('PREPARED_UPSTREAM_REQUIRED: corpus tests require the patched '
+                           '.cache/upstream, not the raw third_party/upstream submodule. '
+                           'Run python3 scripts/prepare_upstream.py; unset AC5_UPSTREAM '
+                           'or point it to the prepared checkout. Selected: ' + str(upstream))
+    return upstream
+
+
 class CorpusTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.upstream = prepared_upstream()
+
+    def test_raw_submodule_precondition(self):
+        with mock.patch.dict(os.environ, {'AC5_UPSTREAM': str(HERE/'third_party/upstream')}):
+            with self.assertRaisesRegex(RuntimeError, 'PREPARED_UPSTREAM_REQUIRED.*prepare_upstream.py'):
+                prepared_upstream()
+
     def test_cli_input_precedes_toolchain(self):
         """Exercise the public CLI, with no valid retail input or compiler."""
         upstream = Path(os.environ.get('AC5_UPSTREAM', str(HERE/'.cache/upstream'))).resolve()
@@ -156,10 +176,25 @@ class CorpusTests(unittest.TestCase):
         self.assertIn('-sPROXY_TO_PTHREAD=1',link);self.assertIn('-sERROR_ON_UNDEFINED_SYMBOLS=1',link)
         self.assertNotIn('-sERROR_ON_UNDEFINED_SYMBOLS=0',link)
         self.assertIn('generated/ps2_image.bin@/game/ps2_image.bin',link)
+        self.assertEqual(corpus.PTHREAD_POOL_SIZE, 16)
+        self.assertEqual(corpus.RETAIL_GUEST_ARGUMENTS[-2:], ['--watchdog', '0'])
+        self.assertIn('-sPTHREAD_POOL_SIZE=16', link)
+        self.assertNotIn('-sPTHREAD_POOL_SIZE=4', link)
+        bridge = (HERE / 'src/runtime/corpus_bridge.c').read_text()
+        self.assertIn('setenv("PS2_ASYNC_GFX","0",1)', bridge)
+        self.assertIn('setenv("PS2_RN_SUN","0",1)', bridge)
+        gpu = (HERE / 'src/renderer/ps2_webgpu.c').read_text()
+        self.assertNotIn('ps2_fatal("webgpu: renderer state capture', gpu)
+        self.assertNotIn('ps2_fatal("webgpu: renderer state serialization', gpu)
+        self.assertIn('continuing without a GPU snapshot', gpu)
+        session = (HERE / 'web/retail-session.mjs').read_text()
+        self.assertNotIn('armWatchdog', session)
+        self.assertNotIn('RETAIL_STARTUP_STALLED', session)
+        self.assertIn("'--watchdog', '0'", session)
 
     def test_real_generator_synthetic_elf(self):
         """Same generator/cache engine, self-authored MIPS return; never retail validation."""
-        upstream=Path(os.environ.get('AC5_UPSTREAM',str(HERE/'.cache/upstream'))).resolve()
+        upstream=self.upstream
         with tempfile.TemporaryDirectory() as d:
             up=Path(d)/'up';out=Path(d)/'out';(up/'tools').mkdir(parents=True);(up/'config').mkdir();out.mkdir()
             (up/'tools/ps2recomp').symlink_to(upstream/'tools/ps2recomp',target_is_directory=True)

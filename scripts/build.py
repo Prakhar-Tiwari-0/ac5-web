@@ -10,8 +10,9 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from corpus import (BuildError, browser_control_flags, compile_units, digest, generate, json_write,
-                    link_command, run, runtime_sources, validate_input)
+from corpus import (BuildError, PTHREAD_POOL_SIZE, RETAIL_GUEST_ARGUMENTS, browser_control_flags,
+                    compile_units, digest, generate, json_write, link_command, run, runtime_sources,
+                    validate_input)
 
 
 def main(argv=None):
@@ -136,13 +137,14 @@ def main(argv=None):
                 'inventory': report['generation']['inventory'],
                 'products': [{'name': p.name, 'bytes': p.stat().st_size, 'sha256': digest(p)} for p in products],
                 'module': 'ac5.mjs', 'wasm': 'ac5.wasm', 'factory': 'createAC5',
-                'arguments': ['--data', '/game', '--disc', '/disc/game.iso'],
+                'arguments': list(RETAIL_GUEST_ARGUMENTS),
+                'pthreadPoolSize': PTHREAD_POOL_SIZE,
                 'image': '/game/ps2_image.bin', 'discMount': 'WORKERFS', 'cardMount': 'IDBFS',
                 'initialMemoryBytes': 134217728, 'maximumMemoryBytes': 536870912,
                 'stackBytes': 2097152, 'features': ['tail-call', 'threads', 'atomics', 'bulk-memory'],
                 'runtimeABI': 'pthread-main-worker-gpu-owner-control-v2',
                 'browserExecutionValidated': False,
-                'runtimeBlocker': 'Retail execution and thread ordering unvalidated; browser worker attempts startup with watchdog and explicit unsupported renderer errors.',
+                'runtimeBlocker': 'Retail execution is unvalidated. The manifest disables the 10-second guest field watchdog; a link is not a boot.',
                 'gates': report['gates']}
             json_write(out / 'retail.json', manifest)
             report['completeRunnableLink'] = False  # Scheduler has not run or been validated.

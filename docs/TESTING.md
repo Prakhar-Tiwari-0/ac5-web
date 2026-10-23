@@ -8,15 +8,21 @@ Tests are deliberately labeled by evidence type. None of the included fixtures c
 npm run test:contracts
 ```
 
-These exercise retail-manifest validation and scheduling message contracts without compiling Wasm.
+These exercise retail-manifest validation, silent-startup session handling, and scheduling message contracts without compiling Wasm. With a local Emscripten install, `EMCC=/path/to/emcc python3 tests/run_thread_pool.py` also checks that the retail pthread pool can create threads beyond the previous pool of 4.
 
 ## Retail generation and build regressions
 
 ```sh
+python3 scripts/prepare_upstream.py
 EMCC="$EMSDK/upstream/emscripten/emcc" python3 tests/corpus_test.py
 ```
 
-Eight tests cover retail input rejection, CLI validation order, generation-only boundaries, generation failure evidence, dispatch/image inventory, command selection, the actual upstream generator/cache with the existing self-authored ELF, and incremental Emscripten compilation. The two positive CLI orchestration tests mock delegation; they do not establish retail generation. Without `EMCC`, the actual compiler regression is skipped.
+Nine tests cover retail input rejection, CLI validation order, generation-only boundaries, generation failure evidence, dispatch/image inventory, command selection, the actual upstream generator/cache with the existing self-authored ELF, incremental Emscripten compilation and rejection of an unpatched test dependency. The two positive CLI orchestration tests mock delegation; they do not establish retail generation. Without `EMCC`, the actual compiler regression is skipped.
+
+The generator test requires the prepared `.cache/upstream`, not the raw submodule.
+An absent/unpatched checkout fails before tests run with
+`PREPARED_UPSTREAM_REQUIRED` and the preparation command. If `AC5_UPSTREAM` is set,
+it must also point to a prepared checkout.
 
 To reproduce the current real-input blocker without a compiler:
 
@@ -78,3 +84,7 @@ npm run audit
 ```
 
 The audit checks tracked files for large content, generated binaries, common credential forms and personal absolute paths. Review `git status`, `git ls-files` and the commit range before every release as well.
+
+The combined graphics/boot integration and exact validation commands are recorded
+in [INTEGRATION.md](INTEGRATION.md). This remains a review candidate; `main` and
+the public remote have not been updated.
