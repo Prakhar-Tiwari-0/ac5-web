@@ -11,9 +11,14 @@ _Static_assert(offsetof(ps2_vk_vertex,r)==12,"vertex ABI changed");
 static u64 frames,draws,verts;
 #define TEX_MAX 4096u
 #define TEX_BYTES_MAX (256u*1024u*1024u)
-typedef struct { u64 key; u32 hash,w,h; u8 *pixels; } web_texture;
+typedef struct { u64 key,touched; u32 hash,w,h,id,generation; u8 *pixels; } web_texture;
 static web_texture textures[TEX_MAX];
-static u32 ntextures,texture_bytes;
+static u32 ntextures,texture_bytes,cache_evictions,cache_slots=TEX_MAX,cache_budget=TEX_BYTES_MAX;
+static u64 texture_clock;
+static web_texture *texture_get(u32 id){
+ web_texture*t=&textures[id%TEX_MAX];return t->pixels&&t->id==id?t:NULL;
+}
+int ac5_webgpu_texture_live(u32 id){web_texture*t=texture_get(id);if(!t)return 0;t->touched=++texture_clock;return 1;}
 int ps2_vk_lockstep;
 float ps2_vk_display_aspect=4.0f/3.0f;
 void (*ps2_vk_before_record)(void);
@@ -28,6 +33,10 @@ EM_JS(void, owner_texture,(u32 id,const u8 *p,u32 w,u32 h),{
  if(!Module['renderer'])throw Error('AC5 WebGPU backend not attached');
  Module['renderer'].uploadTexture(id,HEAPU8.slice(p,p+w*h*4),w,h);
 });
+EM_JS(void, owner_texture_drop,(u32 id),{
+ if(!Module['renderer'])throw Error('AC5 WebGPU backend not attached');
+ Module['renderer'].releaseTexture(id);
+});
 _Static_assert(sizeof(ps2_vk_state)==52*4,"state ABI changed");
 EM_JS(void, owner_present,(int x,int y,int w,int h,int rt),{
  if(!Module['renderer'])throw Error('AC5 WebGPU backend not attached');
@@ -40,11 +49,13 @@ EM_JS(int,owner_closed,(),{return Module['runtimeClosed']?1:0;});
  * the producer returns; no pointer outlives its original C call. */
 EMSCRIPTEN_KEEPALIVE void ac5_webgpu_owner_draw(int t,const ps2_vk_state*s,const ps2_vk_vertex*v,int n){owner_draw(t,s,v,n);}
 EMSCRIPTEN_KEEPALIVE void ac5_webgpu_owner_texture(u32 i,const u8*p,u32 w,u32 h){owner_texture(i,p,w,h);}
+EMSCRIPTEN_KEEPALIVE void ac5_webgpu_owner_texture_drop(u32 i){owner_texture_drop(i);}
 EMSCRIPTEN_KEEPALIVE void ac5_webgpu_owner_present(int x,int y,int w,int h,int rt){owner_present(x,y,w,h,rt);}
 EMSCRIPTEN_KEEPALIVE int ac5_webgpu_owner_ready(void){return owner_ready();}
 EMSCRIPTEN_KEEPALIVE int ac5_webgpu_owner_closed(void){return owner_closed();}
 static void bridge_draw(int t,const ps2_vk_state*s,const ps2_vk_vertex*v,int n){MAIN_THREAD_EM_ASM({Module['_ac5_webgpu_owner_draw']($0,$1,$2,$3);},t,s,v,n);}
 static void bridge_texture(u32 i,const u8*p,u32 w,u32 h){MAIN_THREAD_EM_ASM({Module['_ac5_webgpu_owner_texture']($0,$1,$2,$3);},i,p,w,h);}
+static void bridge_texture_drop(u32 i){MAIN_THREAD_EM_ASM({Module['_ac5_webgpu_owner_texture_drop']($0);},i);}
 static void bridge_present(int x,int y,int w,int h,int rt){MAIN_THREAD_EM_ASM({Module['_ac5_webgpu_owner_present']($0,$1,$2,$3,$4);},x,y,w,h,rt);}
 static int bridge_ready(void){return MAIN_THREAD_EM_ASM_INT({return Module['_ac5_webgpu_owner_ready']();});}
 static int bridge_closed(void){return MAIN_THREAD_EM_ASM_INT({return Module['_ac5_webgpu_owner_closed']();});}
@@ -59,7 +70,7 @@ void ps2_vk_draw(int topology,const ps2_vk_state *st,const ps2_vk_vertex *v,int 
  if(((st->fb_psm!=0&&st->fb_psm!=1&&st->fb_psm!=2&&st->fb_psm!=10)&&!shuffle&&!zcopy)||(st->shuffle_rg&&!shuffle)||(st->zcopy&&!zcopy)||(st->tex_depth&&(!st->tme||!st->tex_rt)))
   ps2_fatal("webgpu: unsupported draw state psm=%u shuffle=%d zcopy=%d depth-texture=%d",st->fb_psm,st->shuffle_rg,st->zcopy,st->tex_depth);
  if(st->abe && (st->alpha_a>2 || st->alpha_b>2 || st->alpha_c>2 || st->alpha_d>2))ps2_fatal("webgpu: invalid GS blend selector");
- if(st->tme && !st->tex_rt && st->tex_index>=ntextures)ps2_fatal("webgpu: unknown texture index %u",st->tex_index);
+ if(st->tme && !st->tex_rt){web_texture*t=texture_get(st->tex_index);if(!t)ps2_fatal("webgpu: stale/unknown texture handle %u",st->tex_index);t->touched=++texture_clock;}
  if(!st->fb_w || !st->fb_h || st->fb_w>4096 || st->fb_h>4096)ps2_fatal("webgpu: invalid target extent");
  bridge_draw(topology,st,v,n);draws++;verts+=(u32)n;
 }
@@ -83,14 +94,32 @@ void ps2_vk_stats(u64*f,u64*d,u64*v,u64*t){if(f)*f=frames;if(d)*d=draws;if(v)*v=
 u32 ps2_vk_texture(u64 k,u32 hash,const u8*p,u32 w,u32 h){
  if(!ps2_vk_enabled())return 0xffffffffu;
  if(!p || !w || !h || w>4096 || h>4096)ps2_fatal("webgpu: invalid texture extent");
- for(u32 i=0;i<ntextures;i++)if(textures[i].key==k && textures[i].hash==hash && textures[i].w==w && textures[i].h==h)return i;
+ for(u32 i=0;i<cache_slots;i++)if(textures[i].pixels&&textures[i].key==k && textures[i].hash==hash && textures[i].w==w && textures[i].h==h){textures[i].touched=++texture_clock;return textures[i].id;}
  u32 bytes=w*h*4u;
- if(ntextures==TEX_MAX || bytes>TEX_BYTES_MAX-texture_bytes)ps2_fatal("webgpu: texture cache capacity exceeded; eviction not implemented");
+ if(bytes>cache_budget)ps2_fatal("webgpu: texture exceeds CPU cache budget");
+ while(ntextures>=cache_slots||bytes>cache_budget-texture_bytes){
+  web_texture*victim=NULL;
+  for(u32 i=0;i<cache_slots;i++)if(textures[i].pixels&&(!victim||textures[i].touched<victim->touched))victim=&textures[i];
+  if(!victim)ps2_fatal("webgpu: texture eviction accounting error");
+  bridge_texture_drop(victim->id);texture_bytes-=victim->w*victim->h*4u;
+  free(victim->pixels);victim->pixels=NULL;victim->generation++;ntextures--;cache_evictions++;
+ }
  u8 *copy=malloc(bytes);if(!copy)ps2_fatal("webgpu: texture CPU allocation failed");memcpy(copy,p,bytes);
- u32 i=ntextures++;textures[i]=(web_texture){k,hash,w,h,copy};texture_bytes+=bytes;bridge_texture(i,copy,w,h);return i;
+ u32 slot=0;while(slot<cache_slots&&textures[slot].pixels)slot++;
+ if(slot==cache_slots||textures[slot].generation>=0xfffffu)ps2_fatal("webgpu: texture handle generation exhausted");
+ u32 generation=textures[slot].generation,id=generation*TEX_MAX+slot;
+ textures[slot]=(web_texture){.key=k,.touched=++texture_clock,.hash=hash,.w=w,.h=h,.id=id,.generation=generation,.pixels=copy};
+ ntextures++;texture_bytes+=bytes;bridge_texture(id,copy,w,h);return id;
 }
-int ps2_vk_texture_is(u32 i,u64 k,u32 h){return i<ntextures && textures[i].key==k && textures[i].hash==h;}
-void ps2_vk_texture_size(u32 i,u32*w,u32*h){if(i>=ntextures)ps2_fatal("webgpu: unknown texture index");if(w)*w=textures[i].w;if(h)*h=textures[i].h;}
+int ps2_vk_texture_is(u32 i,u64 k,u32 h){web_texture*t=texture_get(i);if(!t||t->key!=k||t->hash!=h)return 0;t->touched=++texture_clock;return 1;}
+void ps2_vk_texture_size(u32 i,u32*w,u32*h){web_texture*t=texture_get(i);if(!t)ps2_fatal("webgpu: stale/unknown texture handle");t->touched=++texture_clock;if(w)*w=t->w;if(h)*h=t->h;}
+/* Configure only before first upload. The renderer keeps its separate GPU
+ * resident-byte ceiling, including textures pinned by queued/in-flight work. */
+EMSCRIPTEN_KEEPALIVE int ac5_webgpu_cache_configure(u32 slots,u32 bytes){
+ if(texture_clock||!slots||slots>TEX_MAX||!bytes||bytes>TEX_BYTES_MAX)return -1;
+ cache_slots=slots;cache_budget=bytes;return 0;
+}
+EMSCRIPTEN_KEEPALIVE u32 ac5_webgpu_cache_value(u32 field){return field==0?ntextures:field==1?texture_bytes:field==2?cache_evictions:0xffffffffu;}
 /* GS tracks VRAM range epochs and hashes before calling texture_is. These are
  * immutable content-addressed snapshots: a VRAM invalidation does not mutate
  * any image already referenced by a queued draw. */
@@ -137,17 +166,19 @@ void ps2_vk_draw_mesh_topo(const ps2_vk_state*s,const ps2_vk_mesh_block*b,u32 v,
 }
 void ps2_vk_draw_mesh(const ps2_vk_state*s,const ps2_vk_mesh_block*b,u32 v,u32 f,u32 n,int c){ps2_vk_draw_mesh_topo(s,b,v,f,n,c,PS2_VK_TRIANGLES);}
 void ps2_vk_native_draw(const ps2_vk_native*n,const ps2_vk_vertex*v,int count){(void)n;(void)v;(void)count;ps2_fatal("webgpu: native sun visibility/effects not implemented");}
-u32 ps2_vk_texture_native_find(u64 k,u32 h,u32 w,u32 ht){for(u32 i=0;i<ntextures;i++)if(textures[i].key==k&&textures[i].hash==h&&textures[i].w==w&&textures[i].h==ht)return i;return 0xffffffffu;}
+u32 ps2_vk_texture_native_find(u64 k,u32 h,u32 w,u32 ht){for(u32 i=0;i<cache_slots;i++)if(textures[i].pixels&&textures[i].key==k&&textures[i].hash==h&&textures[i].w==w&&textures[i].h==ht){textures[i].touched=++texture_clock;return textures[i].id;}return 0xffffffffu;}
 u32 ps2_vk_texture_native_rgba(u64 k,u32 hash,const u8*p,u32 w,u32 h){return ps2_vk_texture(k,hash,p,w,h);}
 u32 ps2_vk_texture_native(u32 s,u32 x,u32 y,u32 w,u32 h){
- if(s>=ntextures || !w || !h || x>textures[s].w || y>textures[s].h || w>textures[s].w-x || h>textures[s].h-y)ps2_fatal("webgpu: invalid texture extraction");
+ web_texture*source=texture_get(s);
+ if(!source || !w || !h || x>source->w || y>source->h || w>source->w-x || h>source->h-y)ps2_fatal("webgpu: invalid/stale texture extraction");
  u8 *p=malloc(w*h*4u);if(!p)ps2_fatal("webgpu: extraction allocation failed");
- u32 hash=2166136261u;for(u32 j=0;j<h;j++)memcpy(p+j*w*4u,textures[s].pixels+((y+j)*textures[s].w+x)*4u,w*4u);
+ source->touched=++texture_clock;
+ u32 hash=2166136261u;for(u32 j=0;j<h;j++)memcpy(p+j*w*4u,source->pixels+((y+j)*source->w+x)*4u,w*4u);
  for(u32 i=0;i<w*h*4u;i++)hash=(hash^p[i])*16777619u;
  u64 key=0x8000000000000000ull|((u64)s<<32)|((u64)x<<16)|y;
  u32 idx=ps2_vk_texture(key,hash,p,w,h);free(p);return idx;
 }
-const u8 *ps2_vk_texture_pixels(u32 i){if(i>=ntextures)ps2_fatal("webgpu: unknown texture index");return textures[i].pixels;}
+const u8 *ps2_vk_texture_pixels(u32 i){web_texture*t=texture_get(i);if(!t)ps2_fatal("webgpu: stale/unknown texture handle");t->touched=++texture_clock;return t->pixels;}
 int ps2_vk_screenshot(const char*p){(void)p;ps2_log("webgpu: screenshot export not implemented");return -1;}
 void ps2_vk_statecap(const char*d){(void)d;ps2_fatal("webgpu: renderer state capture not implemented");}
 void ps2_vk_state_save(ps2_state_put put,void*ud){(void)put;(void)ud;ps2_fatal("webgpu: renderer state serialization not implemented");}

@@ -11,6 +11,7 @@ This repository packages the browser runtime, renderer, integration harness, bui
 - Portable WebAssembly dispatch, hooks and strict whole-runtime linking.
 - Original GS decoder connected to a WebGPU backend for textures, render targets, destination-dependent blending, alpha/depth behavior, depth copies and selected framebuffer shuffles.
 - Native mesh programs 0–5 for the tested matrix, lighting, terrain/water, billboard and screen-vertex paths.
+- RGB5A1 framebuffer writes, destination-independent primitive batching and coordinated generation-safe texture eviction; [tested scope and remaining limits](docs/GRAPHICS_COMPATIBILITY.md).
 - Worker-hosted execution with keyboard, mouse and Gamepad API input.
 - Original SPU2 mixing into a bounded AudioWorklet ring.
 - Lazy browser file reads beyond 4 GiB and IndexedDB memory-card persistence.
@@ -99,7 +100,7 @@ Generated retail code and build products remain ignored and private. A local dis
 
 ## Roadmap and limits
 
-The next engineering milestone is a private, validated full retail corpus build followed by the earliest real startup trace. Remaining renderer work includes untested framebuffer/material states, native effects, texture eviction and real-scene synchronization. Safari, mobile browsers, physical controllers and full-game performance remain untested.
+The next engineering milestone is a private, validated full retail corpus build followed by the earliest real startup trace. Remaining renderer work includes untested framebuffer/material states, native effects, residency-pressure recovery and real-scene synchronization. Safari, mobile browsers, physical controllers and full-game performance remain untested.
 
 Retail gates A–F—full corpus link, original execution, initialization, first real frame, interactive menu and playable mission—are all unpassed. Details are tracked in [compatibility](docs/COMPATIBILITY.md), [architecture](docs/ARCHITECTURE.md) and [provenance](docs/PROVENANCE.md).
 

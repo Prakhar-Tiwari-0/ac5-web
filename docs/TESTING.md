@@ -45,6 +45,18 @@ The build produces GS/session/native/kernel/scheduler fixtures and a strict whol
 
 ## Chromium regressions
 
+The audited framebuffer, upload, batching and cache blockers have a separate
+focused suite (including the original GS decoder and real WebGPU readback):
+
+```sh
+AC5_URL=http://127.0.0.1:8781/ CHROME_PATH="/path/to/Chromium" \
+  node tests/graphics_compat.cjs test-results/graphics-compat
+```
+
+Build and serve the complete development fixture first. Its native mesh suite
+also checks both 16-bit framebuffer formats. See
+[graphics compatibility](GRAPHICS_COMPATIBILITY.md) for measured scope and limits.
+
 In terminal one:
 
 ```sh

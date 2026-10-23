@@ -23,4 +23,13 @@ runtime + GPU owner worker
 
 The WebGPU backend retains the upstream GS decoder and vertex assembly. It implements texture conversion/upload, target snapshots for destination-dependent blending and DATE, depth attachments and copies, selected shuffle patterns, native mesh programs 0–5, and bounded presentation. Unsupported states fail explicitly.
 
+RGB5A1 target writes quantize into an expanded RGBA image. Draws proven independent
+of their destination batch primitives in one pass; blend/mask/DATE/feedback draws
+retain ordered snapshots in one encoder submission per original command.
+Generation-tagged C texture handles coordinate LRU eviction with the GPU owner;
+queued draws pin immutable images until submitted work retires. The original GS
+memo checks browser handle liveness before returning a cached draw state. See
+[graphics compatibility](GRAPHICS_COMPATIBILITY.md) for budgets, measured tests
+and remaining format, pressure and rendering limits.
+
 Pause and stop are acknowledged barriers. The original EE owner parks at guarded safe points, the timer avoids accumulated vblank debt, pending GPU work completes, open dirty cards serialize, and IDBFS flush completes before durability is reported. Retail scheduling remains unvalidated because no retail corpus has executed.

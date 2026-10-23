@@ -28,6 +28,7 @@ a WebGPU validation error scope. No upload padding workaround was necessary.
 
 ```sh
 source .toolchains/emsdk/emsdk_env.sh
+python3 scripts/prepare_upstream.py
 python3 tests/build_gs.py .cache/upstream "$EMSDK/upstream/emscripten/emcc" build/graphics
 python3 scripts/serve.py --build-dir build/graphics --port 8784
 # In another terminal:
@@ -58,3 +59,34 @@ path versus one batched pass, with byte-identical pixels. Forty overlapping blen
 primitives retained forty snapshots/passes but used one submission and one uniform
 upload. Dependent-copy cost, pass count, and per-original-command submissions
 remain limitations; this is a measured fast path, not general blend batching.
+
+## Coordinated texture eviction
+
+The C texture store now uses LRU eviction with a 4,096-entry/256 MiB ceiling.
+Each reused slot receives a new generation-tagged 32-bit handle. Every lookup,
+native extraction and identity query checks that generation; old handles never
+become valid again when the same key/hash returns. CPU pixel copies are freed on
+eviction. GPU eviction is synchronous at the ownership bridge but destruction is
+deferred: queued commands hold the immutable image they captured, and submitted
+images retire only after queue completion. GPU active textures are capped at
+4,096 entries/256 MiB; active plus retiring images are capped at 8,192 entries/
+512 MiB. Hitting a residency ceiling reports an explicit drain/yield error before
+allocation; automatic recovery under extreme queued/in-flight pressure remains
+work for the runtime integration. This is not a cap on all render-target memory.
+
+The original GS draw-state memo bypassed `texture_is`, which initially caused a
+reproducible stale-handle fatal on the next unchanged draw after eviction.
+`scripts/apply_graphics.py` adds a guarded memo liveness check to the isolated
+upstream checkout. A missing generation invalidates the memo and lets the
+existing GS texture cache/decoder rebuild it. `prepare_upstream.py` applies the
+change idempotently; the pinned submodule remains clean. No watchdog, timeout,
+thread flags or worker code is changed.
+
+Chromium validation constrained the cache to four entries/256 bytes, performed
+512 stress uploads and 525 total evictions, and ended with 256 active bytes and
+zero retiring bytes. Peak GPU image residency was 768 bytes. Tests verify LRU
+selection, byte-budget eviction, stale handles, same-key/hash regeneration,
+queued old/new image separation, native extraction and pre-allocation residency
+rejection. A separate test exercises the original GS memo and cache without a
+state reset and proves it rebuilds an evicted image. Native mesh tests also render
+to both 16-bit target formats. All nine existing integrated Chromium suites pass.

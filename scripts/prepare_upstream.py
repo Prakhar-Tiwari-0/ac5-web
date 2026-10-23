@@ -4,6 +4,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+from apply_graphics import apply as apply_graphics
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "third_party/upstream"
@@ -17,6 +18,7 @@ if TARGET.exists():
                           capture_output=True, text=True)
     if head.returncode == 0 and head.stdout.strip() == PIN:
         subprocess.run([sys.executable, str(ROOT / "scripts/apply_upstream.py"), str(TARGET)], check=True)
+        apply_graphics(TARGET)
         print(TARGET)
         raise SystemExit(0)
     shutil.rmtree(TARGET)
@@ -24,4 +26,5 @@ TARGET.parent.mkdir(parents=True, exist_ok=True)
 subprocess.run(["git", "clone", "--shared", str(SOURCE), str(TARGET)], check=True)
 subprocess.run(["git", "-C", str(TARGET), "checkout", "--detach", PIN], check=True)
 subprocess.run([sys.executable, str(ROOT / "scripts/apply_upstream.py"), str(TARGET)], check=True)
+apply_graphics(TARGET)
 print(TARGET)

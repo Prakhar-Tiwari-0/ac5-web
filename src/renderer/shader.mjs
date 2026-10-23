@@ -66,7 +66,7 @@ fn masked(value:vec4f,previous:vec4f)->vec4f {
   // and the GS alpha MSB (0x80, represented as 1.0 here) is the only alpha bit.
   // Masking the expanded bits is equivalent to masking the packed RGB5A1 word.
   let rgb=((src.rgb&~masks.rgb)|(dst.rgb&masks.rgb))&vec3u(248u);
-  let alpha=select(select(0.0,1.0,c.a>=1.0),previous.a,(mask&0x80000000u)!=0u);
+  let alpha=select(select(0.0,1.0,c.a>=1.0),select(0.0,1.0,previous.a>=1.0),(mask&0x80000000u)!=0u);
   return vec4f(vec3f(rgb)/255.0,alpha);
  }
  return vec4f((src&~masks)|(dst&masks))/255.0;

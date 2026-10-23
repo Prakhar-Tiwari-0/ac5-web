@@ -15,7 +15,7 @@ Canonical-workspace transition validation reproduced the complete build, all nin
 
 ## Verified compatibility components
 
-The last clean packaged run compiled 96 of 96 open runtime and fixture units and linked a 1,498,124-byte Wasm module. Original GS, VU, VIF and SPU2 suites passed in Node and Chromium. Renderer regressions retained the original 3,514 pixel comparisons with zero mismatches, 20 native mesh checks, and 99 depth/shuffle backend cases plus two original GS recognition sequences.
+The latest graphics-compatibility build compiled 96 of 96 open runtime and fixture units and linked a 1,499,893-byte Wasm module. Original GS, VU, VIF and SPU2 suites passed in Node and Chromium. Renderer regressions retained the original 3,514 pixel comparisons with zero mismatches, 22 native mesh checks (including both 16-bit target formats), and 99 depth/shuffle backend cases plus two original GS recognition sequences. The focused graphics suite additionally validates tight-row uploads, a 17,920-triangle batch and coordinated cache eviction; see [measured scope](GRAPHICS_COMPATIBILITY.md).
 
 The original guest scheduler fixture propagated input, GS output and SPU2 audio; a 16-second pause held fields and audio stable, resume avoided wall-time debt, and dirty memory-card data reloaded in a fresh module. Large-file fixtures exercised reads beyond 4 GiB. These results remain component and integration evidence only.
 
@@ -29,4 +29,4 @@ Safari, iOS, Android, non-Apple GPUs, physical controllers and complete fullscre
 
 1. A legally obtained supported `SLUS_208.51` is required to generate and measure the real corpus. Disc content is separately needed for startup and gameplay.
 2. Whole-game entry, thread, filesystem, audio and save ordering have no real workload trace.
-3. Renderer coverage is incomplete for native effects, uncommon framebuffer/material states, cache eviction and sustained real-scene behavior.
+3. Renderer coverage is incomplete for native effects, uncommon framebuffer/material states, residency-pressure recovery and sustained real-scene behavior. Scoped 16-bit framebuffer, batching and eviction results are recorded in [graphics compatibility](GRAPHICS_COMPATIBILITY.md); they do not establish retail rendering.

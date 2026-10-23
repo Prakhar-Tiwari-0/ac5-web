@@ -9,8 +9,10 @@ export class Ac5Renderer {
  }
  constructor(canvas,device,info){
   this.canvas=canvas;this.device=device;this.info={vendor:info.vendor,architecture:info.architecture,device:info.device,description:info.description,isFallbackAdapter:info.isFallbackAdapter};
-  this.commands=[];this.queuedBytes=0;this.inFlight=0;this.resources=new Map();this.depths=new Map();this.textures=new Map();this.pending=new Set();
-  this.metrics={draws:0,vertices:0,frames:0,snapshotBytes:0,shaderCompilationMs:0,textureBytes:0,targetBytes:0,renderCpuMs:0,primitivePasses:0,destinationCopies:0,depthSnapshots:0,commandSubmissions:0,uniformUploads:0,batchedPrimitives:0};this.lost=null;this.destroyed=false;
+  this.commands=[];this.queuedBytes=0;this.inFlight=0;this.resources=new Map();this.depths=new Map();this.textures=new Map();this.retiredTextures=new Set();this.pending=new Set();
+  this.textureBudgetBytes=256*1024*1024;this.textureResidentLimitBytes=512*1024*1024;
+  this.textureSlotLimit=4096;this.textureResidentSlotLimit=8192;
+  this.metrics={draws:0,vertices:0,frames:0,snapshotBytes:0,shaderCompilationMs:0,textureBytes:0,retiredTextureBytes:0,textureEvictions:0,peakTextureResidentBytes:0,targetBytes:0,renderCpuMs:0,primitivePasses:0,destinationCopies:0,depthSnapshots:0,commandSubmissions:0,uniformUploads:0,batchedPrimitives:0};this.lost=null;this.destroyed=false;
   this.batchIndependent=true; // Disable for ordered primitive-reference comparisons.
   this.context=canvas.getContext('webgpu');this.format=navigator.gpu.getPreferredCanvasFormat();this.context.configure({device,format:this.format,alphaMode:'opaque'});
   device.addEventListener('uncapturederror',e=>{this.lost=e.error.message;});device.lost.then(i=>{if(!this.destroyed)this.lost=`device lost: ${i.reason}: ${i.message}`;});
@@ -39,11 +41,26 @@ export class Ac5Renderer {
  retire(items){this.track(this.device.queue.onSubmittedWorkDone().then(()=>items.forEach(r=>r.destroy())));}
  uploadTexture(id,bytes,w,h){
   this.check();if(!Number.isInteger(id)||this.textures.has(id)||!Number.isInteger(w)||!Number.isInteger(h)||w<1||h<1||w>4096||h>4096||bytes.byteLength!==w*h*4)throw Error('invalid/duplicate texture upload');
-  if(this.metrics.textureBytes+bytes.byteLength>256*1024*1024)throw Error('WebGPU texture store exceeds 256 MiB');
+  if(this.metrics.textureBytes+bytes.byteLength>this.textureBudgetBytes)throw Error('WebGPU active texture budget exceeded; CPU cache must evict first');
+  if(this.metrics.textureBytes+this.metrics.retiredTextureBytes+bytes.byteLength>this.textureResidentLimitBytes)throw Error('WebGPU resident texture budget exceeded; runtime must drain queued work and yield');
+  if(this.textures.size>=this.textureSlotLimit||this.textures.size+this.retiredTextures.size>=this.textureResidentSlotLimit)throw Error('WebGPU texture slot budget exceeded; runtime must drain queued work and yield');
   const texture=this.device.createTexture({size:[w,h],format:'rgba8unorm',usage:GPUTextureUsage.TEXTURE_BINDING|GPUTextureUsage.COPY_DST|GPUTextureUsage.COPY_SRC});
   // queue.writeTexture accepts tightly packed rows. The 256-byte rule applies
   // to encoder buffer/texture copies (e.g. pixels()), not to this queue upload.
-  this.device.queue.writeTexture({texture},bytes,{bytesPerRow:w*4},[w,h]);this.textures.set(id,{texture,w,h});this.metrics.textureBytes+=bytes.byteLength;
+  this.device.queue.writeTexture({texture},bytes,{bytesPerRow:w*4},[w,h]);this.textures.set(id,{texture,w,h,bytes:bytes.byteLength,queued:0,retired:false,retiring:false});this.metrics.textureBytes+=bytes.byteLength;
+  this.metrics.peakTextureResidentBytes=Math.max(this.metrics.peakTextureResidentBytes,this.metrics.textureBytes+this.metrics.retiredTextureBytes);
+ }
+ releaseTexture(id){
+  this.check();const r=this.textures.get(id);if(!r)throw Error('stale/unknown texture eviction');
+  this.textures.delete(id);r.retired=true;this.retiredTextures.add(r);
+  this.metrics.textureBytes-=r.bytes;this.metrics.retiredTextureBytes+=r.bytes;this.metrics.textureEvictions++;
+  this.retireTexture(r);
+ }
+ retireTexture(r){
+  if(!r.retired||r.queued||r.retiring)return;r.retiring=true;
+  this.track(this.device.queue.onSubmittedWorkDone().then(()=>{
+   r.texture.destroy();if(this.retiredTextures.delete(r))this.metrics.retiredTextureBytes-=r.bytes;
+  }));
  }
  drawNative(command){this.draw({...command,native:true});}
  draw(command){
@@ -54,7 +71,11 @@ export class Ac5Renderer {
   if((![0,1,2,10].includes(s.fb_psm||0)&&!shuffle&&!zcopy)||(s.shuffle_rg&&!shuffle)||(s.zcopy&&!zcopy)||(s.tex_depth&&(!s.tme||!s.tex_rt)))throw Error('unsupported draw state');
   if(s.tme&&!s.tex_rt&&!this.textures.has(s.tex_index))throw Error('unknown texture');
   if(this.commands.length>=4096||this.queuedBytes+command.vertices.byteLength>64*1024*1024)throw Error('WebGPU command queue capacity; runtime must yield');
-  this.commands.push({...command,gs:{...command.gs},vertices:command.vertices.slice()});this.queuedBytes+=command.vertices.byteLength;this.metrics.snapshotBytes+=command.vertices.byteLength;
+  // Capture the immutable resource, not only a cache ID. CPU eviction may occur
+  // before this queued command is encoded; the old image must remain pinned.
+  const textureResource=s.tme&&!s.tex_rt?this.textures.get(s.tex_index):null;
+  if(textureResource)textureResource.queued++;
+  this.commands.push({...command,textureResource,gs:{...command.gs},vertices:command.vertices.slice()});this.queuedBytes+=command.vertices.byteLength;this.metrics.snapshotBytes+=command.vertices.byteLength;
  }
  target(id,w,h){
   let r=this.resources.get(id);if(r&&r.w===w&&r.h===h)return r;
@@ -109,7 +130,7 @@ export class Ac5Renderer {
    for(let first=0;first<c.count;first+=batch?c.count:unit){
     if(needsDestination){encoder.copyTextureToTexture({texture:r.texture},{texture:snapshot},[w,h]);this.metrics.destinationCopies++;}
     let image=this.fallback,depthImage=this.fallbackDepth;
-    if(s.tme&&!s.tex_depth){if(s.tex_rt){const source=s.tex_rt-1;if(source===rt)image=snapshot;else{const t=this.resources.get(source);if(!t)throw Error(`render-target texture ${source} not produced`);image=t.texture;}}else image=this.textures.get(s.tex_index).texture;}
+    if(s.tme&&!s.tex_depth){if(s.tex_rt){const source=s.tex_rt-1;if(source===rt)image=snapshot;else{const t=this.resources.get(source);if(!t)throw Error(`render-target texture ${source} not produced`);image=t.texture;}}else image=c.textureResource.texture;}
     if(s.tex_depth){const source=this.depths.get(s.tex_rt-1);if(!source||!source.initialized)throw Error(`depth texture ${s.tex_rt-1} not produced`);
      depthImage=source.texture;
      if(source.texture===depth.texture){const key=`depth/${s.zrt||0}/${w}/${h}`;let copy=scratch.get(key);
@@ -132,9 +153,10 @@ export class Ac5Renderer {
     }
    }
    d.queue.submit([encoder.finish()]);this.metrics.commandSubmissions++;if(batch)this.metrics.batchedPrimitives+=c.count/unit;
+   if(c.textureResource){c.textureResource.queued--;this.retireTexture(c.textureResource);}
    this.metrics.draws++;this.metrics.vertices+=c.count;
   }
-  this.commands.length=0;this.queuedBytes=0;this.inFlight++;this.track(d.queue.onSubmittedWorkDone().then(()=>{buffers.forEach(b=>b.destroy());this.inFlight--;}));this.metrics.renderCpuMs+=performance.now()-start;this.metrics.lastScratchBytes=scratchBytes;this.metrics.peakResourceBytes=Math.max(this.metrics.peakResourceBytes||0,this.metrics.textureBytes+this.metrics.targetBytes+scratchBytes+buffers.reduce((n,b)=>n+(b.size||0),0));
+  this.commands.length=0;this.queuedBytes=0;this.inFlight++;this.track(d.queue.onSubmittedWorkDone().then(()=>{buffers.forEach(b=>b.destroy());this.inFlight--;}));this.metrics.renderCpuMs+=performance.now()-start;this.metrics.lastScratchBytes=scratchBytes;this.metrics.peakResourceBytes=Math.max(this.metrics.peakResourceBytes||0,this.metrics.textureBytes+this.metrics.retiredTextureBytes+this.metrics.targetBytes+scratchBytes+buffers.reduce((n,b)=>n+(b.size||0),0));
  }
  present(p){
   this.flush();if(p.rt===0xffffffff){const e=this.device.createCommandEncoder(),pass=e.beginRenderPass({colorAttachments:[{view:this.context.getCurrentTexture().createView(),loadOp:'clear',clearValue:[0,0,0,1],storeOp:'store'}]});pass.end();this.device.queue.submit([e.finish()]);this.metrics.frames++;return;}
@@ -152,5 +174,5 @@ export class Ac5Renderer {
   const e=this.device.createCommandEncoder();e.copyTextureToBuffer({texture:r.texture},{buffer,bytesPerRow:row},{width:r.w,height:r.h});this.device.queue.submit([e.finish()]);await buffer.mapAsync(GPUMapMode.READ);
   const raw=new Uint8Array(buffer.getMappedRange()),out=new Uint8Array(r.w*r.h*4);for(let y=0;y<r.h;y++)out.set(raw.subarray(y*row,y*row+r.w*4),y*r.w*4);buffer.unmap();buffer.destroy();await this.idle();return out;
  }
- destroy(){if(this.destroyed)return;this.destroyed=true;for(const map of [this.resources,this.depths,this.textures]){for(const r of map.values())r.texture.destroy();map.clear();}this.fallback.destroy();this.fallbackDepth.destroy();this.device.destroy();}
+ destroy(){if(this.destroyed)return;this.destroyed=true;for(const map of [this.resources,this.depths,this.textures]){for(const r of map.values())r.texture.destroy();map.clear();}for(const r of this.retiredTextures)r.texture.destroy();this.retiredTextures.clear();this.commands.length=0;this.fallback.destroy();this.fallbackDepth.destroy();this.device.destroy();}
 }

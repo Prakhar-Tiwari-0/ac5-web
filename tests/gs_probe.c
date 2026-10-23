@@ -116,6 +116,12 @@ EMSCRIPTEN_KEEPALIVE u32 ac5_renderer_fixture_texture(void){
  u8 p[32*32*4];for(u32 y=0;y<32;y++)for(u32 x=0;x<32;x++){u32 i=(y*32+x)*4;p[i]=x<16?200:40;p[i+1]=y<16?60:180;p[i+2]=100;p[i+3]=255;}
  return ps2_vk_texture(0x1337,0x1234,p,32,32);
 }
+EMSCRIPTEN_KEEPALIVE u32 ac5_renderer_cache_texture(u32 key,u32 rgba,u32 w){
+ if(w!=4&&w!=8)abort();u32 pixels[8*4];for(u32 i=0;i<w*4;i++)pixels[i]=rgba;
+ return ps2_vk_texture(key,rgba,(const u8*)pixels,w,4);
+}
+EMSCRIPTEN_KEEPALIVE int ac5_renderer_cache_is(u32 id,u32 key,u32 hash){return ps2_vk_texture_is(id,key,hash);}
+EMSCRIPTEN_KEEPALIVE u32 ac5_renderer_cache_extract(u32 id){return ps2_vk_texture_native(id,0,0,2,2);}
 EMSCRIPTEN_KEEPALIVE int ac5_gs_texture_probe(u32 psm){
  if(psm!=0 && psm!=1 && psm!=2 && psm!=10)return -1;
  ps2_gs_init();
@@ -139,6 +145,11 @@ EMSCRIPTEN_KEEPALIVE int ac5_gs_texture_probe(u32 psm){
  return 0;
 }
 EMSCRIPTEN_KEEPALIVE void ac5_renderer_fixture_set(u32 index,u32 value){if(index>=52)abort();memcpy((u8*)&fixture_state+index*4,&value,4);}
+/* Reissue the prior texture probe without resetting the original GS cache. */
+EMSCRIPTEN_KEEPALIVE void ac5_gs_texture_redraw(void){
+ const u32 xy[12]={0,0,64,0,0,64,64,0,64,64,0,64};
+ for(int i=0;i<6;i++){u32 x=xy[i*2],y=xy[i*2+1];ps2_gs_write_reg(3,(x*8ull)|((y*8ull)<<16));ps2_gs_write_reg(5,(x*16ull)|((y*16ull)<<16));}
+}
 EMSCRIPTEN_KEEPALIVE void ac5_renderer_fixture_vertex(u32 index,float value){if(index>=72)abort();memcpy((u8*)fixture_vertices+index*4,&value,4);}
 /* Indexed CLUT fixture uses CSM2 linear addressing and original GS format paths. */
 EMSCRIPTEN_KEEPALIVE int ac5_gs_indexed_probe(u32 psm){

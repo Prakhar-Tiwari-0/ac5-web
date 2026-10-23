@@ -7,6 +7,7 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
  const report={scope:'original GS and backend graphics regressions; no retail execution',browser:browser.version(),pass:false};
  try{
   const page=await browser.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));
+  page.on('console',message=>{if(message.type()==='error')console.error(message.text());});
   await page.goto(process.env.AC5_URL||'http://127.0.0.1:8781/');
   report.graphics=await page.evaluate(async()=>{
    const {Ac5Renderer}=await import('/renderer/renderer.mjs'),{default:create}=await import('/local/gs-probe.mjs');
@@ -89,7 +90,66 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
    if(blend.copies!==40||blend.passes!==40||blend.submissions!==1||blend.uniformUploads!==1)throw Error('dependent draw did not retain ordered snapshots');
    checks.push({case:'40 overlapping blend primitives in one submission',...summary(blend)});
    await r.idle();const error=await r.device.popErrorScope();if(error)throw Error(error.message);
-   const result={gpu:r.info,checks,metrics:{...r.metrics}};r.destroy();return result;
+   const result={gpu:r.info,checks,metrics:{...r.metrics}};r.destroy();
+   // Exercise the C cache and its upstream texture_is ABI, not a JS-only LRU.
+   const canvas=document.createElement('canvas');document.body.append(canvas);
+   const cache=await Ac5Renderer.create(canvas),cm=await create({renderer:cache});
+   cache.textureBudgetBytes=256;cache.textureResidentLimitBytes=2048;
+   if(cm._ac5_webgpu_cache_configure(4,256)!==0)throw Error('cache configuration');
+   cache.device.pushErrorScope('validation');
+   const upload=(key,color,w=4)=>cm._ac5_renderer_cache_texture(key,color,w)>>>0;
+   function cacheDraw(rt,id,left=0,right=63){
+    cm._ac5_renderer_fixture_begin(rt);
+    const values={tme:1,tex_index:id,tex_w:4,tex_h:4,tfx:1,tcc:1,sx0:left,sx1:right};
+    for(const[k,value]of Object.entries(values)){const bits=new Uint32Array(1);if(k==='tex_w'||k==='tex_h')new Float32Array(bits.buffer)[0]=value;else bits[0]=value;cm._ac5_renderer_fixture_set(fields.indexOf(k),bits[0]);}
+    cm._ac5_renderer_fixture_draw();
+   }
+   const old=upload(1,0xff402010);cacheDraw(900,old,0,31);
+   for(let k=2;k<9;k++)upload(k,0xff000000|k);
+   const replacement=upload(1,0xff604020);cacheDraw(900,replacement,32,63);
+   if(old===replacement||cm._ac5_renderer_cache_is(old,1,0xff402010)!==0||!cm._ac5_renderer_cache_is(replacement,1,0xff604020))throw Error('stale cache handle accepted');
+   // A larger entry must obey the byte limit, independently of the slot limit.
+   upload(9,0xff998877,8);
+   if(cm._ac5_webgpu_cache_value(0)>4||cm._ac5_webgpu_cache_value(1)>256||cache.metrics.retiredTextureBytes===0)throw Error('cache bounds/pinning');
+   const cachedPixels=await cache.pixels(900);
+   equal('queued old image survives slot reuse',pixel(cachedPixels),[16,32,64,255]);
+   equal('replacement image stays distinct',Array.from(cachedPixels.slice((20*64+48)*4,(20*64+48)*4+4)),[32,64,96,255]);
+   if(cache.metrics.retiredTextureBytes!==0)throw Error('retired textures not drained');
+   // Same key and hash after eviction still gets a fresh generation handle.
+   const regenerated=upload(1,0xff402010);if(regenerated===old||cm._ac5_renderer_cache_is(old,1,0xff402010))throw Error('old generation resurrected');
+   const extracted=cm._ac5_renderer_cache_extract(regenerated)>>>0;cacheDraw(901,extracted);
+   equal('native extraction resolves generation handles',pixel(await cache.pixels(901)),[16,32,64,255]);
+   const handles=[];for(let k=100;k<104;k++)handles.push(upload(k,0xff000000|k));
+   if(!cm._ac5_renderer_cache_is(handles[0],100,0xff000064))throw Error('LRU lookup');
+   upload(104,0xff000068);
+   if(!cm._ac5_renderer_cache_is(handles[0],100,0xff000064)||cm._ac5_renderer_cache_is(handles[1],101,0xff000065))throw Error('cache is not LRU');
+   await cache.idle();
+   for(let round=0;round<64;round++){
+    for(let k=0;k<8;k++){const id=upload(1000+round*8+k,0xff000000|((round+1)<<8)|k);cacheDraw(902,id);}
+    const pixels=await cache.pixels(902);equal('eviction stress output',pixel(pixels),[7,round+1,0,255]);
+    if(cm._ac5_webgpu_cache_value(0)>4||cm._ac5_webgpu_cache_value(1)>256||cache.textures.size>4||cache.metrics.textureBytes>256||cache.metrics.retiredTextureBytes!==0)throw Error('sustained cache growth');
+   }
+   cache.textureBudgetBytes=512;cache.textureResidentLimitBytes=256;const size=cache.textures.size;
+   let pressure=false;try{cache.uploadTexture(0x70000000,new Uint8Array(64),4,4);}catch(e){pressure=/resident texture budget/.test(e.message);}
+   if(!pressure||cache.textures.size!==size)throw Error('resident budget must reject before allocation');
+   cache.textureResidentLimitBytes=1024;cache.textureSlotLimit=size;
+   let slotPressure=false;try{cache.uploadTexture(0x70000000,new Uint8Array(64),4,4);}catch(e){slotPressure=/texture slot budget/.test(e.message);}
+   if(!slotPressure||cache.textures.size!==size)throw Error('slot budget must reject before allocation');
+   await cache.idle();const cacheError=await cache.device.popErrorScope();if(cacheError)throw Error(cacheError.message);
+   result.cache={cpuEntries:cm._ac5_webgpu_cache_value(0),cpuBytes:cm._ac5_webgpu_cache_value(1),cpuEvictions:cm._ac5_webgpu_cache_value(2),...cache.metrics,stressUploads:512,staleHandleRejected:true,residentBudgetRejected:true,slotBudgetRejected:true};
+   cache.destroy();
+   const gsCanvas=document.createElement('canvas');document.body.append(gsCanvas);
+   const gsCache=await Ac5Renderer.create(gsCanvas),gm=await create({renderer:gsCache});
+   gsCache.device.pushErrorScope('validation');
+   if(gm._ac5_webgpu_cache_configure(2,8192)!==0)throw Error('GS cache configuration');
+   gm._ac5_gs_texture_probe(0);const oldGs=gsCache.commands[0].gs.tex_index;
+   gm._ac5_renderer_cache_texture(21,0xff010203,4);gm._ac5_renderer_cache_texture(22,0xff040506,4);
+   if(gsCache.textures.has(oldGs))throw Error('original GS image was not evicted');
+   gm._ac5_gs_texture_redraw();const freshGs=gsCache.commands.at(-1).gs.tex_index;
+   if(oldGs===freshGs)throw Error('upstream GS reused an evicted handle');
+   equal('original GS redecodes invalid cache entry',pixel(await gsCache.pixels(gsCache.commands[0].gs.rt)),[192,64,96,255]);
+   const gsError=await gsCache.device.popErrorScope();if(gsError)throw Error(gsError.message);
+   result.cache.originalGsStaleEntryRebuilt=true;gsCache.destroy();return result;
   });assert.deepEqual(errors,[]);report.pass=true;
  }finally{await browser.close();fs.writeFileSync(path.join(out,'graphics-compat.json'),JSON.stringify(report,null,2)+'\n');}
  console.log(JSON.stringify(report,null,2));
