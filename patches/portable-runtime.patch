@@ -1,0 +1,420 @@
+diff --git a/runtime/include/ps2_runtime.h b/runtime/include/ps2_runtime.h
+index 372b607..daa5980 100644
+--- a/runtime/include/ps2_runtime.h
++++ b/runtime/include/ps2_runtime.h
+@@ -19,6 +19,14 @@ typedef int16_t  s16;
+ typedef int32_t  s32;
+ typedef int64_t  s64;
+ 
++#ifdef PS2_BROWSER_TRACE
++void ps2_browser_trace(unsigned stage, const char *event, u32 address);
++#define PS2_BROWSER_EVENT(s,e,a) ps2_browser_trace((s),(e),(a))
++#else
++#define PS2_BROWSER_EVENT(s,e,a) ((void)0)
++#endif
++
++
+ #if defined(__clang__) && __clang_major__ >= 13
+ #  define PS2_TAIL __attribute__((musttail))
+ #elif defined(__GNUC__) && __GNUC__ >= 15
+@@ -28,7 +36,9 @@ typedef int64_t  s64;
+ #  define PS2_NO_MUSTTAIL 1
+ #endif
+ 
+-#if defined(__GNUC__)
++#if defined(__clang__)
++#  define PS2_NOIPA __attribute__((noinline))
++#elif defined(__GNUC__)
+ #  define PS2_NOIPA __attribute__((noipa))
+ #else
+ #  define PS2_NOIPA
+@@ -118,6 +128,10 @@ typedef struct ps2_ctx {
+     u32 vu0_flag_slot, vu0_flag_pending;
+     u32 current_thread;
+     u32 in_interrupt;
++#ifdef PS2_PORTABLE_DISPATCH
++    /* Target is context-local: no global/TLS cross-thread dispatch race. */
++    u32 dispatch_target;
++#endif
+ } ps2_ctx;
+ 
+ extern const ps2_reg128 ps2_zero_q;
+@@ -131,6 +145,12 @@ typedef struct ps2_func_entry {
+ 
+ extern const ps2_func_entry ps2_func_table[];
+ extern const unsigned ps2_func_count;
++#ifdef PS2_PORTABLE_HOOKS
++extern const ps2_func_entry ps2_func_body_table[];
++extern const unsigned ps2_func_body_count;
++/* Returns a body for a same-signature tail call, or NULL if consumed. */
++ps2_fn ps2_hook_enter_portable(u32 guest, ps2_fn body, ps2_ctx *ctx);
++#endif
+ extern const u32 ps2_entry_point;
+ 
+ typedef struct ps2_symbol {
+@@ -356,7 +376,11 @@ void ps2_tlb_op(ps2_ctx *ctx, int op);
+ void ps2_syscall(ps2_ctx *ctx);
+ void ps2_trap(ps2_ctx *ctx, u32 insn);
+ void ps2_unimplemented(ps2_ctx *ctx, u32 pc, u32 insn);
++void ps2_build_dispatch(void);
+ void ps2_dispatch(ps2_ctx *ctx, u32 addr);
++#ifdef PS2_PORTABLE_DISPATCH
++void ps2_dispatch_via(ps2_ctx *ctx);
++#endif
+ ps2_fn ps2_dispatch_lookup(u32 addr);
+ int    ps2_dispatch_redirect(u32 addr, ps2_fn fn);
+ void ps2_unknown_target(ps2_ctx *ctx, u32 addr);
+diff --git a/runtime/src/ps2_core.c b/runtime/src/ps2_core.c
+index f10fbd7..91f8187 100644
+--- a/runtime/src/ps2_core.c
++++ b/runtime/src/ps2_core.c
+@@ -166,6 +166,7 @@ void ps2_build_dispatch(void) {
+         if (ps2_func_table[i].addr < lo) lo = ps2_func_table[i].addr;
+         if (ps2_func_table[i].addr > hi) hi = ps2_func_table[i].addr;
+     }
++    if (!ps2_func_count) ps2_fatal("dispatch: no generated game functions supplied");
+     ps2_text_lo = lo;
+     ps2_text_hi = hi + 4;
+     ps2_fn_index = (ps2_fn *)calloc((ps2_text_hi - ps2_text_lo) / 4 + 1,
+@@ -194,7 +195,7 @@ int ps2_dispatch_redirect(u32 addr, ps2_fn fn) {
+ 
+ int ps2_fn_known(u32 addr) {
+     u32 off = addr - ps2_text_lo;
+-    if (off >= (ps2_text_hi - ps2_text_lo)) return 0;
++    if ((addr & 3u) || off >= (ps2_text_hi - ps2_text_lo)) return 0;
+     return ps2_fn_index[off >> 2] != NULL;
+ }
+ 
+@@ -211,7 +212,13 @@ static u64 unknown_hits;
+ void ps2_unknown_target(ps2_ctx *ctx, u32 addr) {
+     unsigned i;
+     unknown_hits++;
+-    if (PS2_ENV("PS2_STRICT_BRANCH"))
++    if (
++#ifdef PS2_PORTABLE_DISPATCH
++        1 /* Browser execution must never silently skip unknown code. */
++#else
++        PS2_ENV("PS2_STRICT_BRANCH")
++#endif
++       )
+         ps2_fatal("indirect branch to %08X, which no recompiled function "
+                   "claims", addr);
+     for (i = 0; i < unknown_seen_n; i++)
+@@ -248,16 +255,30 @@ void ps2_unknown_report(void) {
+         ps2_log("   %08X", unknown_seen[i]);
+ }
+ 
++#ifdef PS2_PORTABLE_DISPATCH
++void ps2_dispatch_via(ps2_ctx *ctx) {
++    u32 addr = ctx->dispatch_target;
++    ps2_fn f = ps2_dispatch_lookup(addr);
++    if (PS2_LIKELY(f != NULL)) { PS2_TAIL return f(ctx); }
++    ps2_unknown_target(ctx, addr);
++}
++
++/* Host/HLE calls use this convenience entry; generated tail calls use the
++ * one-argument bridge above directly, so mandatory signatures stay uniform. */
++void ps2_dispatch(ps2_ctx *ctx, u32 addr) {
++    ctx->dispatch_target = addr;
++    ps2_dispatch_via(ctx);
++}
++#else
+ void ps2_dispatch(ps2_ctx *ctx, u32 addr) {
+     u32 off = addr - ps2_text_lo;
+-    if (PS2_LIKELY(off < (ps2_text_hi - ps2_text_lo))) {
++    if (PS2_LIKELY(!(addr & 3u) && off < (ps2_text_hi - ps2_text_lo))) {
+         ps2_fn f = ps2_fn_index[off >> 2];
+-        if (PS2_LIKELY(f != NULL)) {
+-            PS2_TAIL return f(ctx);
+-        }
++        if (PS2_LIKELY(f != NULL)) { PS2_TAIL return f(ctx); }
+     }
+     ps2_unknown_target(ctx, addr);
+ }
++#endif
+ 
+ void ps2_div(ps2_reg128 *lo, ps2_reg128 *hi, int pipe, s32 a, s32 b) {
+     s32 q, r;
+@@ -685,6 +706,7 @@ static void samp_record(u32 addr) {
+     samp_total++;
+ }
+ 
++#if PS2_TRACE_CALLS
+ static void *samp_main(void *unused) {
+     (void)unused;
+     while (samp_running) {
+@@ -698,6 +720,8 @@ static void *samp_main(void *unused) {
+     return NULL;
+ }
+ 
++#endif
++
+ void ps2_sampler_start(void) {
+     const char *e = getenv("PS2_PROFILE_GUEST");
+     if (!e || !*e || *e == '0') return;
+diff --git a/runtime/src/ps2_hook.c b/runtime/src/ps2_hook.c
+index d1f8b8d..f5ebbd7 100644
+--- a/runtime/src/ps2_hook.c
++++ b/runtime/src/ps2_hook.c
+@@ -26,6 +26,9 @@ typedef struct {
+     u32 guest;
+     u8 *host;
+     u8 *stub;
++#ifdef PS2_PORTABLE_HOOKS
++    ps2_fn body;
++#endif
+     int patched;
+     hook_entry before[HOOK_MAX_CHAIN], after[HOOK_MAX_CHAIN];
+     unsigned nbefore, nafter;
+@@ -53,7 +56,7 @@ static unsigned nredirects, credirects;
+ 
+ static int next_handle = 1;
+ 
+-#if defined(_WIN32) && defined(__x86_64__)
++#if !defined(PS2_PORTABLE_HOOKS) && defined(_WIN32) && defined(__x86_64__)
+ __asm__(
+     ".text\n"
+     ".globl ps2_hook_thunk\n"
+@@ -138,6 +141,50 @@ u32 ps2_hook_entry_arg(int n, int *ok) {
+     return ps2_r32(f->sp + 4u * (u32)(n - 8));
+ }
+ 
++#ifdef PS2_PORTABLE_HOOKS
++/* The generated public wrapper tail-calls a returned body. Only after-hook
++ * calls retain a C frame, exactly as the native thunk does; the existing
++ * depth guard bounds pending after callbacks during guest tail-jump loops. */
++static hook_site *site_of(u32 guest);
++ps2_fn ps2_hook_enter_portable(u32 guest, ps2_fn body, ps2_ctx *ctx) {
++    hook_site *s = site_of(guest);
++    if (!s) return body;
++    hook_entry chain[HOOK_MAX_CHAIN];
++    unsigned n = s->nbefore;
++    s->calls++;
++    if (n) {
++        memcpy(chain, s->before, n * sizeof *chain);
++        for (unsigned i = 0; i < n; ++i) chain[i].fn(ctx, chain[i].user);
++    }
++    ps2_hook_fn rep = s->replacement;
++    void *rep_user = s->replacement_user;
++    n = s->nafter;
++    if (!n || call_depth >= HOOK_MAX_CALL_DEPTH) {
++        if (n) s->after_skipped++;
++        if (rep) {
++            if (rep(ctx, rep_user)) return NULL;
++            s->declined++;
++        }
++        return body;
++    }
++    hook_frame fr;
++    memcpy(chain, s->after, n * sizeof *chain);
++    for (int i = 0; i < 8; ++i) fr.args[i] = ctx->r[4 + i].uw[0];
++    fr.sp = ctx->r[29].uw[0];
++    fr.prev = cur_frame;
++    ++call_depth;
++    if (!rep || !rep(ctx, rep_user)) {
++        if (rep) s->declined++;
++        body(ctx);
++    }
++    cur_frame = &fr;
++    for (unsigned i = 0; i < n; ++i) chain[i].fn(ctx, chain[i].user);
++    cur_frame = fr.prev;
++    --call_depth;
++    return NULL;
++}
++#endif
++
+ static int table_sorted = -1;
+ 
+ static u8 *host_of(u32 guest) {
+@@ -205,7 +252,18 @@ static u8 *alloc_near(void *anchor, unsigned bytes) {
+ #endif
+ 
+ int ps2_hook_init(void) {
+-#if !HOOK_SUPPORTED
++#ifdef PS2_PORTABLE_HOOKS
++    if (hook_state) return hook_state > 0 ? 0 : -1;
++    hook_state = -1;
++    if (!ps2_func_count || ps2_func_body_count != ps2_func_count) {
++        ps2_log("hook: missing or inconsistent generated body table");
++        return -1;
++    }
++    sites = (hook_site *)calloc(HOOK_MAX_SITES, sizeof *sites);
++    if (!sites) return -1;
++    hook_state = 1;
++    return 0;
++#elif !HOOK_SUPPORTED
+     if (!hook_state) {
+         hook_state = -1;
+         ps2_log("hook: detours are implemented for 64-bit Windows only");
+@@ -273,7 +331,20 @@ static int write_detour(hook_site *s) {
+     return 0;
+ }
+ #else
+-static int write_detour(hook_site *s) { (void)s; return -1; }
++static int write_detour(hook_site *s) {
++#ifdef PS2_PORTABLE_HOOKS
++    /* Public generated wrappers already intercept every direct/indirect call. */
++    for (unsigned i = 0; i < ps2_func_count; ++i) {
++        if (ps2_func_body_table[i].addr != s->guest) continue;
++        s->body = ps2_func_body_table[i].fn;
++        s->patched = 1;
++        return s->body ? 0 : -1;
++    }
++    return -1;
++#else
++    (void)s; return -1;
++#endif
++}
+ #endif
+ 
+ static hook_site *prepare(u32 guest_addr, const char *what, const char *owner) {
+@@ -375,14 +446,22 @@ int ps2_hook_replace(u32 guest_addr, ps2_hook_fn fn, void *user, int priority,
+ }
+ 
+ void ps2_hook_call_original(u32 guest_addr, ps2_ctx *ctx) {
++#ifdef PS2_PORTABLE_HOOKS
++    for (unsigned i = 0; i < ps2_func_count; ++i) {
++        if (ps2_func_body_table[i].addr != guest_addr) continue;
++        ps2_func_body_table[i].fn(ctx);
++        return;
++    }
++    ps2_fatal("hook: original body %08X is unavailable", guest_addr);
++#else
+     hook_site *s = site_of(guest_addr);
+     u8 *host = s ? s->host : host_of(guest_addr);
+     if (!host) {
+-        ps2_log("hook: call_original on %08X, which is not a recompiled "
+-                "function", guest_addr);
++        ps2_log("hook: call_original on %08X, which is not a recompiled function", guest_addr);
+         return;
+     }
+     ((ps2_fn)(void *)(s && s->patched ? host + 8 : host))(ctx);
++#endif
+ }
+ 
+ int ps2_hook_redirect(u32 from_guest, u32 to_guest, int priority,
+diff --git a/runtime/src/ps2_main.c b/runtime/src/ps2_main.c
+index f3d84f6..6b6aee2 100644
+--- a/runtime/src/ps2_main.c
++++ b/runtime/src/ps2_main.c
+@@ -578,7 +578,9 @@ int main(int argc, char **argv) {
+     ps2_sampler_start();
+     ps2_host_prof_attach("ee");
+     ps2_wall_seconds();
++    PS2_BROWSER_EVENT(2, "runtime_main_entered", 0);
+     ps2_mem_init();
++    PS2_BROWSER_EVENT(3, "guest_memory_initialized", 0);
+     ps2_statecap_init(ps2_ram, PS2_RAM_SIZE);
+     ps2_gs_init();
+     ps2_vu1_init();
+@@ -669,6 +671,7 @@ int main(int argc, char **argv) {
+ 
+     t0 = clock();
+     ps2_log("entering recompiled guest at %08X", ps2_entry_point);
++    PS2_BROWSER_EVENT(0, "dispatch_entry_requested", ps2_entry_point);
+     ps2_dispatch(&ps2_cpu, ps2_entry_point);
+     watchdog_armed = 0;
+     ps2_log("guest entry returned after %.2fs",
+diff --git a/tools/ps2recomp/emit.py b/tools/ps2recomp/emit.py
+index ba34f63..4ffd78f 100644
+--- a/tools/ps2recomp/emit.py
++++ b/tools/ps2recomp/emit.py
+@@ -679,10 +679,44 @@ class Emitter:
+                 self.w(out, "%s(ctx);" % fname(target), ind)
+             return
+         if tail:
+-            self.w(out, "{ PS2_TAIL return ps2_dispatch(ctx, 0x%08Xu); }" % target, ind)
++            self._tail_dispatch(out, "0x%08Xu" % target, ind)
+         else:
+             self.w(out, "ps2_dispatch(ctx, 0x%08Xu);" % target, ind)
+ 
++    def _tail_dispatch(self, out, target, ind):
++        # Clang musttail requires the same parameter signature as the caller.
++        # Keep the two-argument desktop ABI, and carry the browser target in
++        # the guest context rather than thread-global scratch state.
++        self.w(out, "#if defined(PS2_PORTABLE_DISPATCH)", 0)
++        self.w(out, "ctx->dispatch_target = %s;" % target, ind)
++        self.w(out, "{ PS2_TAIL return ps2_dispatch_via(ctx); }", ind)
++        self.w(out, "#else", 0)
++        self.w(out, "{ PS2_TAIL return ps2_dispatch(ctx, %s); }" % target, ind)
++        self.w(out, "#endif", 0)
++
++    def _portable_entry(self, entry, text):
++        if getattr(getattr(self.p, "elf", None), "entry", None) == entry:
++            old = "    PS2_ENTER(0x%08Xu);" % entry
++            text = text.replace(old, old + "\n    PS2_BROWSER_EVENT(4, \"generated_entry_entered\", 0x%08Xu);" % entry, 1)
++
++        # Native builds retain their exact exported entry names. Portable
++        # builds split callable entry/body functions so direct generated calls
++        # cannot bypass runtime hook registration, and call_original can reach
++        # the body without rewriting executable bytes.
++        public = fname(entry)
++        body = "func_body_%08X" % entry
++        declaration = "PS2_NOIPA void %s(ps2_ctx *ctx) {" % public
++        replacement = ("#ifdef PS2_PORTABLE_HOOKS\n"
++                       "PS2_NOIPA void %s(ps2_ctx *ctx) {\n"
++                       "#else\n%s\n#endif" % (body, declaration))
++        text = text.replace(declaration, replacement, 1)
++        text += ("#ifdef PS2_PORTABLE_HOOKS\n"
++                 "PS2_NOIPA void %s(ps2_ctx *ctx) {\n"
++                 "    ps2_fn next = ps2_hook_enter_portable(0x%08Xu, %s, ctx);\n"
++                 "    if (next) { PS2_TAIL return next(ctx); }\n"
++                 "}\n#endif\n" % (public, entry, body))
++        return text
++
+     def emit_transfer(self, fn, ins, out, ind=1):
+         self.ee_slots += 1
+         self.flush_slots(out, ind)
+@@ -727,7 +761,8 @@ class Emitter:
+                 self.w(out, "default: break;", ind + 2)
+                 self.w(out, "}", ind + 1)
+             self.w(out, "ctx->pc = 0x%08Xu;" % a, ind + 1)
+-            self.w(out, "{ PS2_TAIL return ps2_dispatch(ctx, _t); } }", ind + 1)
++            self._tail_dispatch(out, "_t", ind + 1)
++            self.w(out, "}", ind)
+             return
+ 
+         if cat == CAT_JUMPR and ins.name == "JALR":
+@@ -825,7 +860,7 @@ class Emitter:
+             out.append("    PS2_ENTER(0x%08Xu);" % fn.entry)
+             out.append("    %s(ctx);" % ov)
+             out.append("}")
+-            return "\n".join(out) + "\n"
++            return self._portable_entry(fn.entry, "\n".join(out) + "\n")
+ 
+         targets = set()
+         for a in fn.addrs:
+@@ -901,7 +936,7 @@ class Emitter:
+             self.flush_slots(out)
+             self.w(out, "goto %s;" % label(a + 4))
+         out.append("}")
+-        return "\n".join(out) + "\n"
++        return self._portable_entry(fn.entry, "\n".join(out) + "\n")
+ 
+     def emit_all(self, outdir, per_file=250):
+         p = self.p
+@@ -929,6 +964,10 @@ class Emitter:
+                              % (fname(e), nm))
+                 else:
+                     fp.write("PS2_NOIPA void %s(ps2_ctx *ctx);\n" % fname(e))
++            fp.write("#ifdef PS2_PORTABLE_HOOKS\n")
++            for e in entries:
++                fp.write("PS2_NOIPA void func_body_%08X(ps2_ctx *ctx);\n" % e)
++            fp.write("#endif\n")
+             fp.write("#ifdef __cplusplus\n}\n#endif\n")
+             fp.write("#endif\n")
+ 
+@@ -952,6 +991,13 @@ class Emitter:
+                 fp.write("    { 0x%08Xu, %s },\n" % (e, fname(e)))
+             fp.write("};\n")
+             fp.write("const unsigned ps2_func_count = %d;\n" % len(entries))
++            fp.write("#ifdef PS2_PORTABLE_HOOKS\n")
++            fp.write("const ps2_func_entry ps2_func_body_table[] = {\n")
++            for e in entries:
++                fp.write("    { 0x%08Xu, func_body_%08X },\n" % (e, e))
++            fp.write("};\n")
++            fp.write("const unsigned ps2_func_body_count = %d;\n" % len(entries))
++            fp.write("#endif\n")
+             fp.write("const u32 ps2_entry_point = 0x%08Xu;\n" % p.elf.entry)
+ 
+         named = sorted((a, n) for a, n in self.symbols.items() if p.in_text(a))
